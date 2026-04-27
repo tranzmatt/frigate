@@ -2,6 +2,7 @@
 
 import datetime
 import importlib
+import json
 import logging
 import os
 import re
@@ -9,6 +10,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 from playhouse.shortcuts import model_to_dict
+from pydantic import ValidationError
 
 from frigate.config import CameraConfig, GenAIConfig, GenAIProviderEnum
 from frigate.const import CLIPS_DIR
@@ -181,7 +183,35 @@ Each line represents a detection state, not necessarily unique individuals. The 
 
             try:
                 metadata = ReviewMetadata.model_validate_json(clean_json)
+            except ValidationError as ve:
+                # Constraint violations (length, item count, ranges) are logged
+                # at debug and the response is kept anyway — a slightly
+                # off-spec answer is still usable, and dropping the whole
+                # response loses the narrative content the model produced.
+                for err in ve.errors():
+                    loc = ".".join(str(p) for p in err["loc"]) or "<root>"
+                    logger.debug(
+                        "Review metadata soft validation: %s — %s (input: %r)",
+                        loc,
+                        err["msg"],
+                        err.get("input"),
+                    )
+                try:
+                    raw = json.loads(clean_json)
+                except json.JSONDecodeError as je:
+                    logger.error("Failed to parse review description JSON: %s", je)
+                    return None
+                # observations is required on the model; fill an empty default
+                # if the response omitted it so attribute access stays safe.
+                raw.setdefault("observations", [])
+                metadata = ReviewMetadata.model_construct(**raw)
+            except Exception as e:
+                logger.error(
+                    f"Failed to parse review description as the response did not match expected format. {e}"
+                )
+                return None
 
+            try:
                 # Normalize confidence if model returned a percentage (e.g. 85 instead of 0.85)
                 if metadata.confidence > 1.0:
                     metadata.confidence = min(metadata.confidence / 100.0, 1.0)
@@ -194,10 +224,7 @@ Each line represents a detection state, not necessarily unique individuals. The 
                 metadata.time = review_data["start"]
                 return metadata
             except Exception as e:
-                # rarely LLMs can fail to follow directions on output format
-                logger.warning(
-                    f"Failed to parse review description as the response did not match expected format. {e}"
-                )
+                logger.error(f"Failed to post-process review metadata: {e}")
                 return None
         else:
             logger.debug(
@@ -343,6 +370,14 @@ Guidelines:
     def get_context_size(self) -> int:
         """Get the context window size for this provider in tokens."""
         return 4096
+
+    def estimate_image_tokens(self, width: int, height: int) -> float:
+        """Estimate prompt tokens consumed by a single image of the given dimensions.
+
+        Default heuristic: ~1 token per 1250 pixels. Providers that can measure or
+        know their model's exact image-token cost should override.
+        """
+        return (width * height) / 1250
 
     def embed(
         self,
