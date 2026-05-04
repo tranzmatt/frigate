@@ -153,9 +153,6 @@ Each line represents a detection state, not necessarily unique individuals. The 
             if "other_concerns" in schema.get("required", []):
                 schema["required"].remove("other_concerns")
 
-        # OpenAI strict mode requires additionalProperties: false on all objects
-        schema["additionalProperties"] = False
-
         response_format = {
             "type": "json_schema",
             "json_schema": {
@@ -201,9 +198,10 @@ Each line represents a detection state, not necessarily unique individuals. The 
                 except json.JSONDecodeError as je:
                     logger.error("Failed to parse review description JSON: %s", je)
                     return None
-                # observations is required on the model; fill an empty default
+                # observations and confidence are required on the model; fill an empty default
                 # if the response omitted it so attribute access stays safe.
                 raw.setdefault("observations", [])
+                raw.setdefault("confidence", 0.0)
                 metadata = ReviewMetadata.model_construct(**raw)
             except Exception as e:
                 logger.error(
