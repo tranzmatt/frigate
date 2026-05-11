@@ -477,7 +477,7 @@ class FrigateConfig(FrigateBaseModel):
     cameras: Dict[str, CameraConfig] = Field(title="Cameras", description="Cameras")
     audio: AudioConfig = Field(
         default_factory=AudioConfig,
-        title="Audio events",
+        title="Audio detection",
         description="Settings for audio-based event detection for all cameras; can be overridden per-camera.",
     )
     birdseye: BirdseyeConfig = Field(
@@ -862,7 +862,9 @@ class FrigateConfig(FrigateBaseModel):
                     if mask_config:
                         coords = mask_config.coordinates
                         relative_coords = get_relative_coordinates(
-                            coords, camera_config.frame_shape
+                            coords,
+                            camera_config.frame_shape,
+                            camera_name=camera_config.name,
                         )
                         # Create a new ObjectMaskConfig with raw_coordinates set
                         processed_global_masks[mask_id] = ObjectMaskConfig(
