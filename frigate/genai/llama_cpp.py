@@ -18,6 +18,63 @@ from frigate.genai.utils import parse_tool_calls_from_message
 logger = logging.getLogger(__name__)
 
 
+def _stats_from_llama_cpp_chunk(data: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Build a stats dict from a llama.cpp streaming chunk.
+
+    Final-chunk `usage` carries authoritative token counts. Per-chunk
+    `timings` (enabled via timings_per_token) carries the running token
+    counts (prompt_n, predicted_n) and generation rate, so live updates
+    work mid-stream.
+    """
+    usage = data.get("usage") or {}
+    timings = data.get("timings") or {}
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    predicted_ms = timings.get("predicted_ms")
+    tps = timings.get("predicted_per_second")
+    stats: dict[str, Any] = {}
+
+    if not isinstance(prompt_tokens, int):
+        prompt_n = timings.get("prompt_n")
+
+        if isinstance(prompt_n, int):
+            prompt_tokens = prompt_n
+
+    if not isinstance(completion_tokens, int):
+        predicted_n = timings.get("predicted_n")
+
+        if isinstance(predicted_n, int):
+            completion_tokens = predicted_n
+
+    if not isinstance(prompt_tokens, int) and not isinstance(completion_tokens, int):
+        return None
+
+    if isinstance(prompt_tokens, int):
+        stats["prompt_tokens"] = prompt_tokens
+
+    if isinstance(completion_tokens, int):
+        stats["completion_tokens"] = completion_tokens
+
+    if isinstance(predicted_ms, (int, float)) and predicted_ms > 0:
+        stats["completion_duration_ms"] = float(predicted_ms)
+
+    if isinstance(tps, (int, float)) and tps > 0:
+        stats["tokens_per_second"] = float(tps)
+
+    return stats or None
+
+
+def _parse_launch_arg(args: list[str], flag: str) -> str | None:
+    """Return the value following `flag` in a positional argv list, or None."""
+    try:
+        idx = args.index(flag)
+    except ValueError:
+        return None
+    if idx + 1 >= len(args):
+        return None
+    return args[idx + 1]
+
+
 def _to_jpeg(img_bytes: bytes) -> bytes | None:
     """Convert image bytes to JPEG. llama.cpp/STB does not support WebP."""
     try:
@@ -71,26 +128,69 @@ class LlamaCppClient(GenAIClient):
             base_url = base_url.replace("/v1", "")  # Strip /v1 if included in base_url
 
         configured_model = self.genai_config.model
+        info = self._get_model_info(base_url, configured_model)
 
-        # Query /v1/models to validate the configured model exists
+        if info is None:
+            return None
+
+        self._context_size = info["context_size"]
+        self._supports_vision = info["supports_vision"]
+        self._supports_audio = info["supports_audio"]
+        self._supports_tools = info["supports_tools"]
+        self._media_marker = info["media_marker"]
+
+        logger.info(
+            "llama.cpp model '%s' initialized — context: %s, vision: %s, audio: %s, tools: %s",
+            configured_model,
+            self._context_size or "unknown",
+            self._supports_vision,
+            self._supports_audio,
+            self._supports_tools,
+        )
+
+        return base_url
+
+    def _get_model_info(
+        self, base_url: str, configured_model: str
+    ) -> dict[str, Any] | None:
+        """Resolve model metadata from /v1/models with /props fallback.
+
+        Returns a dict of capability fields, or None if the server's model
+        registry was reachable and reported the configured model as missing.
+        A reachable-but-unparseable /v1/models is treated as soft-pass and
+        falls through to /props, matching prior behavior.
+
+        After ggml-org/llama.cpp#22952, /v1/models exposes per-model
+        `architecture.input_modalities` (text/image/audio) — the primary
+        source. When proxied through llama-swap, the same entry carries
+        `status.args` (server launch argv) and, for the loaded model,
+        `meta.n_ctx`. /props remains the only source for `media_marker`,
+        which the server randomizes per startup unless LLAMA_MEDIA_MARKER
+        is set.
+        """
+        info: dict[str, Any] = {
+            "context_size": None,
+            "supports_vision": False,
+            "supports_audio": False,
+            "supports_tools": False,
+            "media_marker": "<__media__>",
+        }
+
+        model_entry: dict[str, Any] | None = None
         try:
-            response = requests.get(
-                f"{base_url}/v1/models",
-                timeout=10,
-            )
+            response = requests.get(f"{base_url}/v1/models", timeout=10)
             response.raise_for_status()
             models_data = response.json()
 
-            model_found = False
             for model in models_data.get("data", []):
                 model_ids = {model.get("id")}
                 for alias in model.get("aliases", []):
                     model_ids.add(alias)
                 if configured_model in model_ids:
-                    model_found = True
+                    model_entry = model
                     break
 
-            if not model_found:
+            if model_entry is None:
                 available = []
                 for m in models_data.get("data", []):
                     available.append(m.get("id", "unknown"))
@@ -109,10 +209,35 @@ class LlamaCppClient(GenAIClient):
                 e,
             )
 
-        # Query /props for context size, modalities, and tool support.
-        # The standard /props?model=<name> endpoint works with llama-server.
-        # If it fails, try the llama-swap per-model passthrough endpoint which
-        # returns props for a specific model without requiring it to be loaded.
+        if model_entry is not None:
+            architecture = model_entry.get("architecture") or {}
+            input_modalities = architecture.get("input_modalities") or []
+
+            if isinstance(input_modalities, list):
+                info["supports_vision"] = "image" in input_modalities
+                info["supports_audio"] = "audio" in input_modalities
+
+            status = model_entry.get("status") or {}
+            launch_args = status.get("args") if isinstance(status, dict) else None
+            if not isinstance(launch_args, list):
+                launch_args = []
+
+            meta = model_entry.get("meta") if isinstance(model_entry, dict) else None
+            n_ctx = meta.get("n_ctx") if isinstance(meta, dict) else None
+
+            if not n_ctx:
+                n_ctx = _parse_launch_arg(launch_args, "--ctx-size")
+
+            if n_ctx:
+                try:
+                    info["context_size"] = int(n_ctx)
+                except (TypeError, ValueError):
+                    pass
+
+            # Tool calling on llama-server requires --jinja.
+            if "--jinja" in launch_args:
+                info["supports_tools"] = True
+
         try:
             try:
                 response = requests.get(
@@ -130,44 +255,32 @@ class LlamaCppClient(GenAIClient):
                 response.raise_for_status()
                 props = response.json()
 
-            # Context size from server runtime config
-            default_settings = props.get("default_generation_settings", {})
-            n_ctx = default_settings.get("n_ctx")
-            if n_ctx:
-                self._context_size = int(n_ctx)
+            if info["context_size"] is None:
+                default_settings = props.get("default_generation_settings", {})
+                n_ctx = default_settings.get("n_ctx")
+                if n_ctx:
+                    info["context_size"] = int(n_ctx)
 
-            # Modalities (vision, audio)
-            modalities = props.get("modalities", {})
-            self._supports_vision = modalities.get("vision", False)
-            self._supports_audio = modalities.get("audio", False)
+            if not (info["supports_vision"] or info["supports_audio"]):
+                modalities = props.get("modalities", {})
+                info["supports_vision"] = bool(modalities.get("vision", False))
+                info["supports_audio"] = bool(modalities.get("audio", False))
 
-            # Tool support from chat template capabilities
-            chat_caps = props.get("chat_template_caps", {})
-            self._supports_tools = chat_caps.get("supports_tools", False)
+            if not info["supports_tools"]:
+                chat_caps = props.get("chat_template_caps", {})
+                info["supports_tools"] = bool(chat_caps.get("supports_tools", False))
 
-            # Media marker for multimodal embeddings; the server randomizes this
-            # per startup unless LLAMA_MEDIA_MARKER is set, so we must read it
-            # from /props rather than hardcoding "<__media__>".
             media_marker = props.get("media_marker")
             if isinstance(media_marker, str) and media_marker:
-                self._media_marker = media_marker
-
-            logger.info(
-                "llama.cpp model '%s' initialized — context: %s, vision: %s, audio: %s, tools: %s",
-                configured_model,
-                self._context_size or "unknown",
-                self._supports_vision,
-                self._supports_audio,
-                self._supports_tools,
-            )
+                info["media_marker"] = media_marker
         except Exception as e:
             logger.warning(
                 "Failed to query llama.cpp /props endpoint: %s. "
-                "Using defaults for context size and capabilities.",
+                "Image embeddings may fail if the server randomized its media marker.",
                 e,
             )
 
-        return base_url
+        return info
 
     def _send(
         self,
@@ -395,6 +508,8 @@ class LlamaCppClient(GenAIClient):
         }
         if stream:
             payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}
+            payload["timings_per_token"] = True
         if tools:
             payload["tools"] = tools
             if openai_tool_choice is not None:
@@ -657,6 +772,9 @@ class LlamaCppClient(GenAIClient):
                             data = json.loads(data_str)
                         except json.JSONDecodeError:
                             continue
+                        maybe_stats = _stats_from_llama_cpp_chunk(data)
+                        if maybe_stats is not None:
+                            yield ("stats", maybe_stats)
                         choices = data.get("choices") or []
                         if not choices:
                             continue
