@@ -26,7 +26,6 @@ from frigate.plus import PlusApi
 from frigate.util.builtin import (
     deep_merge,
     get_ffmpeg_arg_list,
-    load_labels,
 )
 from frigate.util.config import (
     CURRENT_CONFIG_VERSION,
@@ -81,12 +80,12 @@ logger = logging.getLogger(__name__)
 
 yaml = YAML()
 
-DEFAULT_DETECTORS = {
-    "ov": {
-        "type": "openvino",
-        "device": "CPU",
-    }
-}
+# Pydantic field default applied when an existing config omits `detectors:`.
+# Kept as cpu tflite for backwards compatibility with 0.17 configs.
+DEFAULT_DETECTORS = {"cpu": {"type": "cpu"}}
+
+# Used by the openvino branch below and rendered into the new-config YAML
+# template so first-time setups default to openvino on CPU.
 DEFAULT_MODEL = {
     "width": 300,
     "height": 300,
@@ -95,6 +94,7 @@ DEFAULT_MODEL = {
     "path": "/openvino-model/ssdlite_mobilenet_v2.xml",
     "labelmap_path": "/openvino-model/coco_91cl_bkgr.txt",
 }
+NEW_CONFIG_DETECTORS = {"ov": {"type": "openvino", "device": "CPU"}}
 DEFAULT_DETECT_DIMENSIONS = {"width": 1280, "height": 720}
 
 
@@ -110,7 +110,7 @@ DEFAULT_CONFIG = f"""
 mqtt:
   enabled: False
 
-{_render_default_yaml({"detectors": DEFAULT_DETECTORS, "model": DEFAULT_MODEL})}
+{_render_default_yaml({"detectors": NEW_CONFIG_DETECTORS, "model": DEFAULT_MODEL})}
 cameras: {{}}  # No cameras defined, UI wizard should be used
 version: {CURRENT_CONFIG_VERSION}
 """
@@ -629,26 +629,22 @@ class FrigateConfig(FrigateBaseModel):
 
         # set default min_score for object attributes
         for attribute in self.model.all_attributes:
-            if not self.objects.filters.get(attribute):
+            existing = self.objects.filters.get(attribute)
+            if existing is None:
                 self.objects.filters[attribute] = FilterConfig(min_score=0.7)
-            elif self.objects.filters[attribute].min_score == 0.5:
-                self.objects.filters[attribute].min_score = 0.7
+            elif "min_score" not in existing.model_fields_set:
+                existing.min_score = 0.7
 
         # auto detect hwaccel args
         if self.ffmpeg.hwaccel_args == "auto":
             self.ffmpeg.hwaccel_args = auto_detect_hwaccel()
 
-        # Populate global audio filters for all audio labels
-        all_audio_labels = {
-            label
-            for label in load_labels("/audio-labelmap.txt", prefill=521).values()
-            if label
-        }
-
+        # Populate global audio filters from listen. Existing user-defined
+        # entries for labels not in listen are preserved but unused at runtime.
         if self.audio.filters is None:
             self.audio.filters = {}
 
-        for key in sorted(all_audio_labels - self.audio.filters.keys()):
+        for key in sorted(set(self.audio.listen) - self.audio.filters.keys()):
             self.audio.filters[key] = AudioFilterConfig()
 
         self.audio.filters = dict(sorted(self.audio.filters.items()))
@@ -840,7 +836,9 @@ class FrigateConfig(FrigateBaseModel):
             if camera_config.audio.filters is None:
                 camera_config.audio.filters = {}
 
-            for key in sorted(all_audio_labels - camera_config.audio.filters.keys()):
+            for key in sorted(
+                set(camera_config.audio.listen) - camera_config.audio.filters.keys()
+            ):
                 camera_config.audio.filters[key] = AudioFilterConfig()
 
             camera_config.audio.filters = dict(

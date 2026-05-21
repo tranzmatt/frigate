@@ -32,6 +32,7 @@ import {
   ZoomLevel,
 } from "@/types/review";
 import { getChunkedTimeRange } from "@/utils/timelineUtil";
+import { isReplayCamera } from "@/utils/cameraUtil";
 import { getEndOfDayTimestamp } from "@/utils/dateUtil";
 import axios from "axios";
 import {
@@ -49,6 +50,7 @@ import { FiMoreVertical } from "react-icons/fi";
 import { IoMdArrowRoundBack } from "react-icons/io";
 import useSWR from "swr";
 import MotionReviewTimeline from "@/components/timeline/MotionReviewTimeline";
+import { baseUrl } from "@/api/baseUrl";
 import { Button } from "@/components/ui/button";
 import BlurredIconButton from "@/components/button/BlurredIconButton";
 import {
@@ -284,7 +286,11 @@ export default function EventView({
               {
                 position: "top-center",
                 action: (
-                  <a href="/export" target="_blank" rel="noopener noreferrer">
+                  <a
+                    href={`${baseUrl}export`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
                     <Button>
                       {t("export.toast.view", { ns: "components/dialog" })}
                     </Button>
@@ -1010,12 +1016,14 @@ function MotionReview({
 
     let cameras;
     if (!filter || !filter.cameras) {
-      cameras = Object.values(config.cameras);
+      cameras = Object.values(config.cameras).filter(
+        (cam) => !isReplayCamera(cam.name),
+      );
     } else {
       const filteredCams = filter.cameras;
 
-      cameras = Object.values(config.cameras).filter((cam) =>
-        filteredCams.includes(cam.name),
+      cameras = Object.values(config.cameras).filter(
+        (cam) => filteredCams.includes(cam.name) && !isReplayCamera(cam.name),
       );
     }
 

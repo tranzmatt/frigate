@@ -98,6 +98,22 @@ class OllamaClient(GenAIClient):
 
     provider: ApiClient | None
     provider_options: dict[str, Any]
+    _supports_thinking_cache: Optional[bool] = None
+
+    @property
+    def supports_toggleable_thinking(self) -> bool:
+        if self._supports_thinking_cache is not None:
+            return self._supports_thinking_cache
+        if self.provider is None:
+            return False
+        try:
+            response = self.provider.show(self.genai_config.model)
+            capabilities = response.get("capabilities") or []
+            self._supports_thinking_cache = "thinking" in capabilities
+        except Exception as e:
+            logger.debug("Failed to query Ollama model capabilities: %s", e)
+            self._supports_thinking_cache = False
+        return self._supports_thinking_cache
 
     def _auth_headers(self) -> dict | None:
         if self.genai_config.api_key:
@@ -118,6 +134,9 @@ class OllamaClient(GenAIClient):
                 timeout=self.timeout,
                 headers=self._auth_headers(),
             )
+            if not self.validate_model:
+                # Probe path
+                return client
             # ensure the model is available locally
             response = client.show(self.genai_config.model)
             if response.get("error"):
@@ -175,6 +194,7 @@ class OllamaClient(GenAIClient):
         prompt: str,
         images: list[bytes],
         response_format: Optional[dict] = None,
+        enable_thinking: bool = False,
     ) -> Optional[str]:
         """Submit a request to Ollama"""
         if self.provider is None:
@@ -191,6 +211,8 @@ class OllamaClient(GenAIClient):
                 schema = response_format.get("json_schema", {}).get("schema")
                 if schema:
                     ollama_options["format"] = self._clean_schema_for_ollama(schema)
+            if self.supports_toggleable_thinking:
+                ollama_options["think"] = enable_thinking
             logger.debug(
                 "Ollama generate request: model=%s, prompt_len=%s, image_count=%s, "
                 "has_format=%s, options=%s",
@@ -271,6 +293,7 @@ class OllamaClient(GenAIClient):
         tools: Optional[list[dict[str, Any]]],
         tool_choice: Optional[str],
         stream: bool = False,
+        enable_thinking: Optional[bool] = None,
     ) -> dict[str, Any]:
         """Build request_messages and params for chat (sync or stream)."""
         request_messages = []
@@ -309,11 +332,14 @@ class OllamaClient(GenAIClient):
             "model": self.genai_config.model,
             "messages": request_messages,
             **self.provider_options,
+            **self.genai_config.runtime_options,
         }
         if stream:
             request_params["stream"] = True
         if tools:
             request_params["tools"] = tools
+        if enable_thinking is not None and self.supports_toggleable_thinking:
+            request_params["think"] = enable_thinking
         return request_params
 
     def _message_from_response(self, response: dict[str, Any]) -> dict[str, Any]:
@@ -336,6 +362,9 @@ class OllamaClient(GenAIClient):
             response.get("done"),
         )
         content = message.get("content", "").strip() if message.get("content") else None
+        reasoning = (
+            message.get("thinking", "").strip() if message.get("thinking") else None
+        )
         tool_calls = parse_tool_calls_from_message(message)
         finish_reason = "error"
         if response.get("done"):
@@ -348,6 +377,7 @@ class OllamaClient(GenAIClient):
             finish_reason = "stop"
         return {
             "content": content,
+            "reasoning": reasoning,
             "tool_calls": tool_calls,
             "finish_reason": finish_reason,
         }
@@ -357,6 +387,7 @@ class OllamaClient(GenAIClient):
         messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = "auto",
+        enable_thinking: Optional[bool] = None,
     ) -> dict[str, Any]:
         if self.provider is None:
             logger.warning(
@@ -369,7 +400,11 @@ class OllamaClient(GenAIClient):
             }
         try:
             request_params = self._build_request_params(
-                messages, tools, tool_choice, stream=False
+                messages,
+                tools,
+                tool_choice,
+                stream=False,
+                enable_thinking=enable_thinking,
             )
             response = self.provider.chat(**request_params)
             return self._message_from_response(response)
@@ -393,6 +428,7 @@ class OllamaClient(GenAIClient):
         messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = "auto",
+        enable_thinking: Optional[bool] = None,
     ) -> AsyncGenerator[tuple[str, Any], None]:
         """Stream chat with tools; yields content deltas then final message.
 
@@ -422,7 +458,11 @@ class OllamaClient(GenAIClient):
                     "Ollama: tools provided, using non-streaming call for tool support"
                 )
                 request_params = self._build_request_params(
-                    messages, tools, tool_choice, stream=False
+                    messages,
+                    tools,
+                    tool_choice,
+                    stream=False,
+                    enable_thinking=enable_thinking,
                 )
                 async_client = OllamaAsyncClient(
                     host=self.genai_config.base_url,
@@ -431,6 +471,9 @@ class OllamaClient(GenAIClient):
                 )
                 response = await async_client.chat(**request_params)
                 result = self._message_from_response(response)
+                reasoning = result.get("reasoning")
+                if reasoning:
+                    yield ("reasoning_delta", reasoning)
                 content = result.get("content")
                 if content:
                     yield ("content_delta", content)
@@ -441,7 +484,11 @@ class OllamaClient(GenAIClient):
                 return
 
             request_params = self._build_request_params(
-                messages, tools, tool_choice, stream=True
+                messages,
+                tools,
+                tool_choice,
+                stream=True,
+                enable_thinking=enable_thinking,
             )
             async_client = OllamaAsyncClient(
                 host=self.genai_config.base_url,
@@ -449,6 +496,7 @@ class OllamaClient(GenAIClient):
                 headers=self._auth_headers(),
             )
             content_parts: list[str] = []
+            reasoning_parts: list[str] = []
             final_message: dict[str, Any] | None = None
             final_chunk: Any = None
             stream = await async_client.chat(**request_params)
@@ -456,6 +504,10 @@ class OllamaClient(GenAIClient):
                 if not chunk or "message" not in chunk:
                     continue
                 msg = chunk.get("message", {})
+                reasoning_delta = msg.get("thinking") or ""
+                if reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
+                    yield ("reasoning_delta", reasoning_delta)
                 delta = msg.get("content") or ""
                 if delta:
                     content_parts.append(delta)
@@ -463,8 +515,10 @@ class OllamaClient(GenAIClient):
                 if chunk.get("done"):
                     final_chunk = chunk
                     full_content = "".join(content_parts).strip() or None
+                    full_reasoning = "".join(reasoning_parts).strip() or None
                     final_message = {
                         "content": full_content,
+                        "reasoning": full_reasoning,
                         "tool_calls": None,
                         "finish_reason": "stop",
                     }
@@ -481,6 +535,7 @@ class OllamaClient(GenAIClient):
                     "message",
                     {
                         "content": "".join(content_parts).strip() or None,
+                        "reasoning": "".join(reasoning_parts).strip() or None,
                         "tool_calls": None,
                         "finish_reason": "stop",
                     },

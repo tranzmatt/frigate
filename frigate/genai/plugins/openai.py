@@ -38,7 +38,11 @@ class OpenAIClient(GenAIClient):
     context_size: Optional[int] = None
 
     def _init_provider(self) -> OpenAI:
-        """Initialize the client."""
+        """Initialize the client.
+
+        Subclasses (e.g. Azure) should raise on configuration errors; the
+        manager catches construction failures and disables the provider.
+        """
         # Extract context_size from provider_options as it's not a valid OpenAI client parameter
         # It will be used in get_context_size() instead
         provider_opts = {
@@ -57,6 +61,7 @@ class OpenAIClient(GenAIClient):
         prompt: str,
         images: list[bytes],
         response_format: Optional[dict] = None,
+        enable_thinking: bool = False,
     ) -> Optional[str]:
         """Submit a request to OpenAI."""
         encoded_images = [base64.b64encode(image).decode("utf-8") for image in images]
@@ -183,11 +188,14 @@ class OpenAIClient(GenAIClient):
         messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = "auto",
+        enable_thinking: Optional[bool] = None,
     ) -> dict[str, Any]:
         """
         Send chat messages to OpenAI with optional tool definitions.
 
-        Implements function calling/tool usage for OpenAI models.
+        Implements function calling/tool usage for OpenAI models. The OpenAI
+        chat completions API does not expose a per-request thinking toggle,
+        so ``enable_thinking`` is accepted for interface parity and ignored.
         """
         try:
             openai_tool_choice = None
@@ -203,6 +211,7 @@ class OpenAIClient(GenAIClient):
                 "model": self.genai_config.model,
                 "messages": messages,
                 "timeout": self.timeout,
+                **self.genai_config.runtime_options,
             }
 
             if tools:
@@ -219,7 +228,7 @@ class OpenAIClient(GenAIClient):
                 }
                 request_params.update(provider_opts)
 
-            result = self.provider.chat.completions.create(**request_params)  # type: ignore[call-overload]
+            result = self.provider.chat.completions.create(**request_params)
 
             if (
                 result is None
@@ -235,6 +244,10 @@ class OpenAIClient(GenAIClient):
             choice = result.choices[0]
             message = choice.message
             content = message.content.strip() if message.content else None
+            raw_reasoning = getattr(message, "reasoning_content", None) or getattr(
+                message, "reasoning", None
+            )
+            reasoning = raw_reasoning.strip() if raw_reasoning else None
 
             tool_calls = None
             if message.tool_calls:
@@ -269,6 +282,7 @@ class OpenAIClient(GenAIClient):
 
             return {
                 "content": content,
+                "reasoning": reasoning,
                 "tool_calls": tool_calls,
                 "finish_reason": finish_reason,
             }
@@ -277,6 +291,7 @@ class OpenAIClient(GenAIClient):
             logger.warning("OpenAI request timed out: %s", str(e))
             return {
                 "content": None,
+                "reasoning": None,
                 "tool_calls": None,
                 "finish_reason": "error",
             }
@@ -284,6 +299,7 @@ class OpenAIClient(GenAIClient):
             logger.warning("OpenAI returned an error: %s", str(e))
             return {
                 "content": None,
+                "reasoning": None,
                 "tool_calls": None,
                 "finish_reason": "error",
             }
@@ -293,11 +309,15 @@ class OpenAIClient(GenAIClient):
         messages: list[dict[str, Any]],
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[str] = "auto",
+        enable_thinking: Optional[bool] = None,
     ) -> AsyncGenerator[tuple[str, Any], None]:
         """
         Stream chat with tools; yields content deltas then final message.
 
         Implements streaming function calling/tool usage for OpenAI models.
+        The OpenAI chat completions API does not expose a per-request thinking
+        toggle, so ``enable_thinking`` is accepted for interface parity and
+        ignored.
         """
         try:
             openai_tool_choice = None
@@ -315,6 +335,7 @@ class OpenAIClient(GenAIClient):
                 "timeout": self.timeout,
                 "stream": True,
                 "stream_options": {"include_usage": True},
+                **self.genai_config.runtime_options,
             }
 
             if tools:
@@ -333,11 +354,12 @@ class OpenAIClient(GenAIClient):
 
             # Use streaming API
             content_parts: list[str] = []
+            reasoning_parts: list[str] = []
             tool_calls_by_index: dict[int, dict[str, Any]] = {}
             finish_reason = "stop"
             usage_stats: Optional[dict[str, Any]] = None
 
-            stream = self.provider.chat.completions.create(**request_params)  # type: ignore[call-overload]
+            stream = self.provider.chat.completions.create(**request_params)
 
             for chunk in stream:
                 chunk_usage = getattr(chunk, "usage", None)
@@ -353,6 +375,15 @@ class OpenAIClient(GenAIClient):
                 # Check for finish reason
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason
+
+                # Extract reasoning deltas (reasoning_content or reasoning,
+                # depending on the server)
+                reasoning_delta = getattr(delta, "reasoning_content", None) or getattr(
+                    delta, "reasoning", None
+                )
+                if reasoning_delta:
+                    reasoning_parts.append(reasoning_delta)
+                    yield ("reasoning_delta", reasoning_delta)
 
                 # Extract content deltas
                 if delta.content:
@@ -382,6 +413,7 @@ class OpenAIClient(GenAIClient):
 
             # Build final message
             full_content = "".join(content_parts).strip() or None
+            full_reasoning = "".join(reasoning_parts).strip() or None
 
             # Convert tool calls to list format
             tool_calls_list = None
@@ -410,6 +442,7 @@ class OpenAIClient(GenAIClient):
                 "message",
                 {
                     "content": full_content,
+                    "reasoning": full_reasoning,
                     "tool_calls": tool_calls_list,
                     "finish_reason": finish_reason,
                 },
@@ -421,6 +454,7 @@ class OpenAIClient(GenAIClient):
                 "message",
                 {
                     "content": None,
+                    "reasoning": None,
                     "tool_calls": None,
                     "finish_reason": "error",
                 },
@@ -431,6 +465,7 @@ class OpenAIClient(GenAIClient):
                 "message",
                 {
                     "content": None,
+                    "reasoning": None,
                     "tool_calls": None,
                     "finish_reason": "error",
                 },
