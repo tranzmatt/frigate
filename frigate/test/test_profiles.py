@@ -178,6 +178,141 @@ class TestCameraProfileConfig(unittest.TestCase):
         with self.assertRaises(ValidationError):
             FrigateConfig(**config_data)
 
+    def test_profile_zone_without_base_rejected(self):
+        """Profile defining a zone not present on the base camera is rejected."""
+        from pydantic import ValidationError
+
+        config_data = {
+            "mqtt": {"host": "mqtt"},
+            "profiles": {
+                "armed": {"friendly_name": "Armed"},
+            },
+            "cameras": {
+                "front": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            }
+                        ]
+                    },
+                    "detect": {"height": 1080, "width": 1920, "fps": 5},
+                    "zones": {
+                        "front_yard": {"coordinates": "0,0,100,0,100,100,0,100"},
+                    },
+                    "profiles": {
+                        "armed": {
+                            "zones": {
+                                "phantom": {
+                                    "coordinates": "0,0,50,0,50,50,0,50",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        with self.assertRaises(ValidationError) as ctx:
+            FrigateConfig(**config_data)
+        self.assertIn("phantom", str(ctx.exception))
+
+    def test_profile_motion_mask_without_base_rejected(self):
+        """Profile defining a motion mask not present on the base camera is rejected."""
+        from pydantic import ValidationError
+
+        config_data = {
+            "mqtt": {"host": "mqtt"},
+            "profiles": {
+                "armed": {"friendly_name": "Armed"},
+            },
+            "cameras": {
+                "front": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            }
+                        ]
+                    },
+                    "detect": {"height": 1080, "width": 1920, "fps": 5},
+                    "motion": {
+                        "mask": {
+                            "base_mask": {
+                                "coordinates": "0,0,100,0,100,100,0,100",
+                            },
+                        },
+                    },
+                    "profiles": {
+                        "armed": {
+                            "motion": {
+                                "mask": {
+                                    "phantom_mask": {
+                                        "coordinates": "0,0,50,0,50,50,0,50",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        with self.assertRaises(ValidationError) as ctx:
+            FrigateConfig(**config_data)
+        self.assertIn("phantom_mask", str(ctx.exception))
+
+    def test_profile_overrides_matching_base_accepted(self):
+        """Profile overrides that reference existing base zones/masks parse cleanly."""
+        config_data = {
+            "mqtt": {"host": "mqtt"},
+            "profiles": {
+                "armed": {"friendly_name": "Armed"},
+            },
+            "cameras": {
+                "front": {
+                    "ffmpeg": {
+                        "inputs": [
+                            {
+                                "path": "rtsp://10.0.0.1:554/video",
+                                "roles": ["detect"],
+                            }
+                        ]
+                    },
+                    "detect": {"height": 1080, "width": 1920, "fps": 5},
+                    "zones": {
+                        "front_yard": {"coordinates": "0,0,100,0,100,100,0,100"},
+                    },
+                    "motion": {
+                        "mask": {
+                            "tree": {
+                                "coordinates": "0,0,100,0,100,100,0,100",
+                            },
+                        },
+                    },
+                    "profiles": {
+                        "armed": {
+                            "zones": {
+                                "front_yard": {
+                                    "coordinates": "0,0,50,0,50,50,0,50",
+                                    "inertia": 5,
+                                },
+                            },
+                            "motion": {
+                                "mask": {
+                                    "tree": {
+                                        "coordinates": "0,0,75,0,75,75,0,75",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        config = FrigateConfig(**config_data)
+        assert "armed" in config.cameras["front"].profiles
+
 
 class TestProfileInConfig(unittest.TestCase):
     """Test that profiles parse correctly in FrigateConfig."""
@@ -591,6 +726,55 @@ class TestProfileManager(unittest.TestCase):
         api_base = self.manager.get_base_configs_for_api("front")
         # Should not raise
         json.dumps(api_base)
+
+    @patch.object(ProfileManager, "_persist_active_profile")
+    def test_activate_profile_clears_dispatcher_runtime_state(self, mock_persist):
+        """User-initiated activation drops runtime overrides (steady-state rule)."""
+        dispatcher = MagicMock()
+        manager = ProfileManager(self.config, self.mock_updater, dispatcher)
+        manager.activate_profile("armed")
+        dispatcher.clear_runtime_state.assert_called_once_with()
+
+    @patch.object(ProfileManager, "_persist_active_profile")
+    def test_deactivate_profile_clears_dispatcher_runtime_state(self, mock_persist):
+        """Deactivating a profile also drops runtime overrides."""
+        dispatcher = MagicMock()
+        manager = ProfileManager(self.config, self.mock_updater, dispatcher)
+        manager.activate_profile("armed")
+        dispatcher.clear_runtime_state.reset_mock()
+
+        manager.activate_profile(None)
+        dispatcher.clear_runtime_state.assert_called_once_with()
+
+    @patch.object(ProfileManager, "_persist_active_profile")
+    def test_startup_replay_does_not_clear_runtime_state(self, mock_persist):
+        """Startup callers pass clear_runtime_overrides=False to preserve state."""
+        dispatcher = MagicMock()
+        manager = ProfileManager(self.config, self.mock_updater, dispatcher)
+        manager.activate_profile("armed", clear_runtime_overrides=False)
+        dispatcher.clear_runtime_state.assert_not_called()
+
+    @patch.object(ProfileManager, "_persist_active_profile")
+    def test_update_config_clears_when_active_profile_reapplies(self, mock_persist):
+        """After /api/config/set, an active-profile re-application drops state."""
+        dispatcher = MagicMock()
+        manager = ProfileManager(self.config, self.mock_updater, dispatcher)
+        manager.activate_profile("armed")
+        dispatcher.clear_runtime_state.reset_mock()
+
+        new_config = FrigateConfig(**self.config_data)
+        manager.update_config(new_config)
+        dispatcher.clear_runtime_state.assert_called_once_with()
+
+    @patch.object(ProfileManager, "_persist_active_profile")
+    def test_update_config_does_not_clear_when_no_active_profile(self, mock_persist):
+        """Plain /api/config/set without a profile doesn't trigger the broad clear."""
+        dispatcher = MagicMock()
+        manager = ProfileManager(self.config, self.mock_updater, dispatcher)
+        # No activate_profile call — config.active_profile is None
+        new_config = FrigateConfig(**self.config_data)
+        manager.update_config(new_config)
+        dispatcher.clear_runtime_state.assert_not_called()
 
 
 class TestProfilePersistence(unittest.TestCase):

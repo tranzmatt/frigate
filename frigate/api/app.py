@@ -770,6 +770,13 @@ def _config_set_in_memory(request: Request, body: AppConfigSetBody) -> JSONRespo
                             ),
                             cam_cfg.objects,
                         )
+                        if cam_cfg.zones:
+                            request.app.config_publisher.publish_update(
+                                CameraConfigUpdateTopic(
+                                    CameraConfigUpdateEnum.zones, camera
+                                ),
+                                cam_cfg.zones,
+                            )
                         request.app.config_publisher.publish_update(
                             CameraConfigUpdateTopic(
                                 CameraConfigUpdateEnum.refresh, camera
@@ -900,6 +907,11 @@ def config_set(request: Request, body: AppConfigSetBody):
                     content=({"success": False, "message": "Error updating config"}),
                     status_code=500,
                 )
+
+            # drop runtime overrides for any fields the user just rewrote in
+            # yaml so a stale override doesn't silently win after restart
+            if request.app.dispatcher is not None:
+                request.app.dispatcher.clear_runtime_state_for_yaml_keys(updates.keys())
 
             if body.requires_restart == 0 or body.update_topic:
                 old_config: FrigateConfig = request.app.frigate_config
