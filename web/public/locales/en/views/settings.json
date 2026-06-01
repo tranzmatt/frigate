@@ -320,7 +320,7 @@
         "nameLength": "Camera name must be 64 characters or less",
         "invalidCharacters": "Camera name contains invalid characters",
         "nameExists": "Camera name already exists",
-        "customUrlRtspRequired": "Custom URLs must begin with \"rtsp://\". Manual configuration is required for non-RTSP camera streams."
+        "customUrlRtspRequired": "Custom URLs must begin with \"rtsp://\" or \"rtsps://\". Manual configuration is required for non-RTSP camera streams."
       }
     },
     "step2": {
@@ -544,6 +544,92 @@
       "normal": "Normal",
       "dedicatedLpr": "Dedicated LPR",
       "saveSuccess": "Updated camera type for {{cameraName}}. Restart Frigate to apply the changes."
+    },
+    "clone": {
+      "sectionTitle": "Clone settings",
+      "sectionDescription": "Copy configuration from one camera to another camera or a new one.",
+      "button": "Clone settings",
+      "title": "Clone camera settings",
+      "description": "Copy a camera's configuration to one or more other cameras or a new camera. Identity (name, friendly name, web UI URL, display order) is never copied.",
+      "source": {
+        "label": "Source camera",
+        "placeholder": "Select a source camera",
+        "required": "Select a source camera"
+      },
+      "target": {
+        "legend": "Target",
+        "newRadio": "New camera",
+        "newNameLabel": "Camera name",
+        "newNamePlaceholder": "e.g., back_door or Back Door",
+        "newNameRequired": "Camera name is required",
+        "newNameInvalid": "Invalid camera name",
+        "newNameCollision": "A camera with this name already exists",
+        "newStreamsForced": "Streams are always copied for a new camera.",
+        "existingCamerasRadio": "Existing cameras",
+        "allCameras": "All cameras",
+        "existingPlaceholder": "Select at least one camera",
+        "existingDisabled": "No other cameras to copy to"
+      },
+      "categories": {
+        "legend": "Settings to clone",
+        "description": "Choose which settings to copy from the source camera.",
+        "selectAll": "Select all",
+        "selectNone": "Select none",
+        "resetDefaults": "Reset to defaults",
+        "general": "General",
+        "spatial": "Spatial settings",
+        "streams": "Streams",
+        "spatialWarningTitle": "Resolution mismatch",
+        "spatialWarning": "Source camera {{srcCamera}} detect resolution ({{srcWidth}}×{{srcHeight}}) differs from: {{cameras}}. Polygons may not align on those cameras. These defaults are off; enable to copy as-is.",
+        "restartHint": "Restart required",
+        "items": {
+          "record": "Recording",
+          "snapshots": "Snapshots",
+          "review": "Review",
+          "motion": "Motion detection",
+          "objects": "Objects",
+          "audio": "Audio detection",
+          "audio_transcription": "Audio transcription",
+          "notifications": "Notifications",
+          "birdseye": "Birdseye",
+          "mqtt": "MQTT",
+          "timestamp_style": "Timestamp style",
+          "onvif": "ONVIF",
+          "lpr": "License plate recognition",
+          "face_recognition": "Face recognition",
+          "semantic_search": "Semantic search",
+          "genai": "Generative AI",
+          "type": "Camera type (normal / dedicated LPR)",
+          "profiles": "Profiles",
+          "detect": "Detect dimensions",
+          "zones": "Zones",
+          "motion_mask": "Motion masks",
+          "object_masks": "Object masks",
+          "ffmpeg_live": "Stream URLs and roles"
+        }
+      },
+      "footer": {
+        "changeCount_zero": "No changes selected",
+        "changeCount_one": "{{count}} change will be applied",
+        "changeCount_other": "{{count}} changes will be applied",
+        "restartNeeded": "Restart will be required for some changes.",
+        "liveOnly": "All changes will apply live without a restart.",
+        "submit": "Clone",
+        "submitting": "Cloning…"
+      },
+      "toast": {
+        "success": "Settings copied to {{cameraName}}",
+        "successWithRestart": "Settings copied to {{cameraName}}. Restart Frigate to apply all changes.",
+        "successMulti_one": "Settings copied to {{count}} camera",
+        "successMulti_other": "Settings copied to {{count}} cameras",
+        "successMultiWithRestart_one": "Settings copied to {{count}} camera. Restart Frigate to apply all changes.",
+        "successMultiWithRestart_other": "Settings copied to {{count}} cameras. Restart Frigate to apply all changes.",
+        "partialFailure": "{{successCount}} sections applied; '{{failedSection}}' failed: {{errorMessage}}",
+        "partialFailureMulti": "Copied to {{successCount}} camera(s); failed for {{failed}}: {{errorMessage}}",
+        "newCameraPartialFailure": "Camera {{cameraName}} was created but some settings failed to copy: {{errorMessage}}",
+        "sourceMissing": "Source camera no longer exists",
+        "submitError": "Failed to clone camera: {{errorMessage}}"
+      }
     }
   },
   "cameraReview": {
@@ -1068,7 +1154,8 @@
     },
     "notificationUnavailable": {
       "title": "Notifications Unavailable",
-      "desc": "Web push notifications require a secure context (<code>https://…</code>). This is a browser limitation. Access Frigate securely to use notifications."
+      "desc": "Web push notifications require a secure context (<code>https://…</code>). This is a browser limitation. Access Frigate securely to use notifications.",
+      "descPwa": "On iOS, web push notifications are only available when Frigate is installed to your Home Screen. Open the <strong>Share</strong> menu, choose <strong>Add to Home Screen</strong>, then open Frigate from the new icon to register this device for notifications."
     },
     "globalSettings": {
       "title": "Global Settings",
@@ -1405,6 +1492,17 @@
       "namePlaceholder": "e.g., Wife's Car",
       "platePlaceholder": "Plate number or regex"
     },
+    "liveStreams": {
+      "streamNameLabel": "Stream name",
+      "streamNamePlaceholder": "e.g., Main HD Stream",
+      "go2rtcStreamLabel": "go2rtc stream",
+      "go2rtcStreamPlaceholder": "Select a go2rtc stream",
+      "go2rtcStreamSearch": "Search or enter a stream name…",
+      "noGo2rtcStreams": "No go2rtc streams configured",
+      "availableStreams": "Available streams",
+      "useCustom": "Use \"{{value}}\"",
+      "addStream": "Add stream"
+    },
     "timezone": {
       "defaultOption": "Use browser timezone"
     },
@@ -1577,6 +1675,17 @@
       "refresh": "Refresh models",
       "probeFailed": "Failed to probe models",
       "fetchedModels": "Successfully fetched model list"
+    },
+    "ptzPresets": {
+      "placeholder": "Select or enter a preset...",
+      "search": "Search or enter a preset...",
+      "noPresets": "No presets available",
+      "available": "Camera presets",
+      "useCustom": "Use \"{{value}}\""
+    },
+    "defaultRole": {
+      "admin": "Admin",
+      "viewer": "Viewer"
     }
   },
   "globalConfig": {
@@ -1666,7 +1775,7 @@
     "addStream": "Add stream",
     "addStreamDesc": "Enter a name for the new stream. This name will be used to reference the stream in your camera configuration.",
     "addUrl": "Add URL",
-    "streamNumber": "Stream {{index}}",
+    "sourceNumber": "Source {{index}}",
     "streamName": "Stream name",
     "streamNamePlaceholder": "e.g., front_door",
     "streamUrlPlaceholder": "e.g., rtsp://user:pass@192.168.1.100/stream",
@@ -1742,12 +1851,6 @@
       "browser": "Browser",
       "12hour": "12 hour",
       "24hour": "24 hour"
-    },
-    "TimeOrDateStyle": {
-      "full": "Full",
-      "long": "Long",
-      "medium": "Medium",
-      "short": "Short"
     },
     "unitSystem": {
       "metric": "Metric",
@@ -1831,6 +1934,9 @@
     },
     "semanticSearch": {
       "jinav2SmallModelSize": "The 'small' size with the Jina V2 model has high RAM and inference cost. The 'large' model with a discrete GPU is recommended."
+    },
+    "onvif": {
+      "autotrackingNoZones": "Autotracking requires at least one zone. Define a zone for this camera in Masks / Zones, then set it as a required zone below."
     }
   }
 }

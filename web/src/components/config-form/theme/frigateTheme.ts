@@ -33,6 +33,8 @@ import { OptionalFieldWidget } from "./widgets/OptionalFieldWidget";
 import { SemanticSearchModelWidget } from "./widgets/SemanticSearchModelWidget";
 import { SemanticSearchModelSizeWidget } from "./widgets/SemanticSearchModelSizeWidget";
 import { OnvifProfileWidget } from "./widgets/OnvifProfileWidget";
+import { PTZPresetsWidget } from "./widgets/PTZPresetsWidget";
+import { DefaultRoleWidget } from "./widgets/DefaultRoleWidget";
 
 import { FieldTemplate } from "./templates/FieldTemplate";
 import { ObjectFieldTemplate } from "./templates/ObjectFieldTemplate";
@@ -51,6 +53,7 @@ import { ReplaceRulesField } from "./fields/ReplaceRulesField";
 import { CameraInputsField } from "./fields/CameraInputsField";
 import { DictAsYamlField } from "./fields/DictAsYamlField";
 import { KnownPlatesField } from "./fields/KnownPlatesField";
+import { LiveStreamsField } from "./fields/LiveStreamsField";
 
 export interface FrigateTheme {
   widgets: RegistryWidgetsType;
@@ -89,6 +92,8 @@ export const frigateTheme: FrigateTheme = {
     semanticSearchModel: SemanticSearchModelWidget,
     semanticSearchModelSize: SemanticSearchModelSizeWidget,
     onvifProfile: OnvifProfileWidget,
+    ptzPresets: PTZPresetsWidget,
+    defaultRole: DefaultRoleWidget,
   },
   templates: {
     FieldTemplate: FieldTemplate as React.ComponentType<FieldTemplateProps>,
@@ -109,5 +114,6 @@ export const frigateTheme: FrigateTheme = {
     CameraInputsField: CameraInputsField,
     DictAsYamlField: DictAsYamlField,
     KnownPlatesField: KnownPlatesField,
+    LiveStreamsField: LiveStreamsField,
   },
 };

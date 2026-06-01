@@ -10,7 +10,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Toaster } from "@/components/ui/sonner";
 import { StatusBarMessagesContext } from "@/context/statusbar-provider";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -49,6 +48,8 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Trans, useTranslation } from "react-i18next";
 import { useDateLocale } from "@/hooks/use-date-locale";
 import { useDocDomain } from "@/hooks/use-doc-domain";
+import { isPWA } from "@/utils/isPWA";
+import { isIOS } from "react-device-detect";
 import { CameraNameLabel } from "@/components/camera/FriendlyNameLabel";
 import { useIsAdmin } from "@/hooks/use-is-admin";
 import { cn } from "@/lib/utils";
@@ -438,6 +439,12 @@ export default function NotificationsSettingsExtras({
   }
 
   if (!("Notification" in window) || !window.isSecureContext) {
+    // iOS only exposes web push to apps installed to the Home Screen, so a
+    // secure-context iOS browser tab that isn't an installed PWA has no
+    // Notification API. Android supports web push in a normal tab, so it never
+    // reaches this case and keeps the generic secure-context message.
+    const requiresPwaInstall = isIOS && window.isSecureContext && !isPWA;
+
     return (
       <div className="scrollbar-container order-last mb-2 mt-2 flex h-full w-full flex-col overflow-y-auto pb-2 md:order-none">
         <div className="w-full max-w-5xl">
@@ -466,12 +473,21 @@ export default function NotificationsSettingsExtras({
                   {t("notification.notificationUnavailable.title")}
                 </AlertTitle>
                 <AlertDescription>
-                  <Trans ns="views/settings">
-                    notification.notificationUnavailable.desc
-                  </Trans>
+                  <Trans
+                    ns="views/settings"
+                    i18nKey={
+                      requiresPwaInstall
+                        ? "notification.notificationUnavailable.descPwa"
+                        : "notification.notificationUnavailable.desc"
+                    }
+                  />
                   <div className="mt-3 flex items-center">
                     <Link
-                      to={getLocaleDocUrl("configuration/authentication")}
+                      to={getLocaleDocUrl(
+                        requiresPwaInstall
+                          ? "configuration/notifications"
+                          : "configuration/authentication",
+                      )}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline"
@@ -491,7 +507,6 @@ export default function NotificationsSettingsExtras({
 
   return (
     <div className="flex size-full flex-col md:flex-row">
-      <Toaster position="top-center" closeButton={true} />
       <div className="scrollbar-container order-last mb-2 mt-2 flex h-full w-full flex-col overflow-y-auto px-2 md:order-none">
         <div className={cn("w-full max-w-5xl space-y-6")}>
           {isAdmin && (
@@ -521,7 +536,7 @@ export default function NotificationsSettingsExtras({
                             <FormControl>
                               <Input
                                 id="notification-email"
-                                className="text-md w-full border border-input bg-background p-2 hover:bg-accent hover:text-accent-foreground dark:[color-scheme:dark] md:w-72"
+                                className="w-full border border-input bg-background p-2 hover:bg-accent hover:text-accent-foreground dark:[color-scheme:dark] md:w-72"
                                 placeholder={t(
                                   "notification.email.placeholder",
                                 )}
@@ -788,7 +803,7 @@ export function CameraNotificationSwitch({
           )}
           <div className="flex flex-col">
             <CameraNameLabel
-              className="text-md cursor-pointer text-primary smart-capitalize"
+              className="cursor-pointer text-primary smart-capitalize"
               htmlFor="camera"
               camera={camera}
             />
