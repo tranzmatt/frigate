@@ -206,7 +206,7 @@ Start with the [Usage](#usage) section and re-read the [Model Requirements](#mod
 1. Ensure `person` is being _detected_. A `person` will automatically be scanned by Frigate for a face. Any detected faces will appear in the Recent Recognitions tab in the Frigate UI's Face Library.
 
    If you are using a Frigate+ or `face` detecting model:
-   - Watch the debug view (Settings --> Debug) to ensure that `face` is being detected along with `person`.
+   - Watch the [debug view](/usage/live#the-single-camera-view) to ensure that `face` is being detected along with `person`.
    - You may need to adjust the `min_score` for the `face` object if faces are not being detected.
 
    If you are **not** using a Frigate+ or `face` detecting model:
@@ -241,7 +241,7 @@ This can happen for a few different reasons, but this is usually an indicator th
 
 Review your face collections and remove most of the unclear or low-quality images. Then, use the **Reprocess** button on each face in the **Train** tab to evaluate how the changes affect recognition scores.
 
-Avoid training on images that already score highly, as this can lead to over-fitting. Instead, focus on relatively clear images that score lower - ideally with different lighting, angles, and conditions—to help the model generalize more effectively.
+Avoid training on images that already score highly, as this can lead to over-fitting. Instead, focus on relatively clear images that score lower (ideally with different lighting, angles, and conditions) to help the model generalize more effectively.
 
 ### Frigate misidentified a face. Can I tell it that a face is "not" a specific person?
 

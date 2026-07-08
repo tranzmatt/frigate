@@ -271,9 +271,9 @@ cameras:
 
 Each camera has three possible states, surfaced as a status selector in **Settings → Global configuration → Camera management**:
 
-- **On** — streams are processed normally. Object detection, recording, and Live view are active.
-- **Off** — Frigate's ffmpeg processes are paused. Recording stops, object detection is paused, and the Live dashboard displays a blank image with a "Camera is off" message. The camera is still visible in the Live dashboard and its past review items, tracked objects, and historical footage remain accessible via the UI. The Off state persists across Frigate restarts via a `.runtime_state.json` file alongside `config.yml` (see [Runtime toggle persistence](#runtime-toggle-persistence)).
-- **Disabled** — the change is saved to your configuration file (`enabled: False`). The camera stops immediately, Frigate stops ffmpeg processes, and all live and historical UI elements for the camera are no longer visible but remains retained on disk. The camera is still listed in **Settings → Global configuration → Camera management** so it can be re-enabled. **A restart of Frigate is required to bring a disabled camera back to On.**
+- **On**: streams are processed normally. Object detection, recording, and Live view are active.
+- **Off**: Frigate's ffmpeg processes are paused. Recording stops, object detection is paused, and the Live dashboard displays a blank image with a "Camera is off" message. The camera is still visible in the Live dashboard and its past review items, tracked objects, and historical footage remain accessible via the UI. The Off state persists across Frigate restarts via a `.runtime_state.json` file alongside `config.yml` (see [Runtime toggle persistence](#runtime-toggle-persistence)).
+- **Disabled**: the change is saved to your configuration file (`enabled: False`). The camera stops immediately, Frigate stops ffmpeg processes, and all live and historical UI elements for the camera are no longer visible but remains retained on disk. The camera is still listed in **Settings → Global configuration → Camera management** so it can be re-enabled. **A restart of Frigate is required to bring a disabled camera back to On.**
 
 #### Turning a camera on or off
 
@@ -302,7 +302,7 @@ If you want a camera's historical data (review items, tracked objects, footage) 
 
 #### Runtime toggle persistence
 
-The Live view toggles for **camera on/off**, **detect**, **recordings**, **snapshots**, and **audio detection** — along with the equivalent MQTT `/set` topics — write the new state to `.runtime_state.json` next to your `config.yml`. The file is replayed on Frigate startup so your last-known toggle states survive a restart. Two interactions worth knowing:
+The Live view toggles for **camera on/off**, **detect**, **recordings**, **snapshots**, and **audio detection** (along with the equivalent MQTT `/set` topics) write the new state to `.runtime_state.json` next to your `config.yml`. The file is replayed on Frigate startup so your last-known toggle states survive a restart. Two interactions worth knowing:
 
 - **Settings UI saves win.** When you save a field through **Settings → Global configuration**, the matching entry is cleared from `.runtime_state.json` so the new value in your config file is the durable source.
 - **Switching profiles clears all runtime overrides.** Activating or deactivating a [profile](/configuration/profiles) is treated as a deliberate state change, so the file is wiped to avoid stale overrides replaying on top of the new profile.
@@ -333,7 +333,7 @@ When your browser runs into problems playing back your camera streams, it will l
 
 - **stalled**
   - What it means: Playback has stalled because the player has fallen too far behind live (extended buffering or no data arriving).
-  - What to try: This is usually indicative of the browser struggling to decode too many high-resolution streams at once. Try selecting a lower-bandwidth stream (substream), reduce the number of live streams open, improve the network connection, or lower the camera resolution. Also check your camera's keyframe (I-frame) interval — shorter intervals make playback start and recover faster. You can also try increasing the timeout value in the UI pane of Frigate's settings.
+  - What to try: This is usually indicative of the browser struggling to decode too many high-resolution streams at once. Try selecting a lower-bandwidth stream (substream), reduce the number of live streams open, improve the network connection, or lower the camera resolution. Also check your camera's keyframe (I-frame) interval: shorter intervals make playback start and recover faster. You can also try increasing the timeout value in the UI pane of Frigate's settings.
 
   - Possible console messages from the player code:
     - `Buffer time (10 seconds) exceeded, browser may not be playing media correctly.`
@@ -434,3 +434,7 @@ When your browser runs into problems playing back your camera streams, it will l
    ```
 
    The same applies to your `record` stream: if its aspect ratio differs from your `detect` stream, your recordings will appear in a different shape than the live view. For consistent framing across live view and recordings, use the same aspect ratio for all of a camera's streams (the resolution can still differ).
+
+9. **Why does Frigate prefer MSE over WebRTC for live view?**
+
+   Frigate prefers MSE because it delivers a better out-of-the-box experience than WebRTC on nearly every axis that matters for a security camera system. MSE is an open standard optimized and supported by all modern browsers, works without any extra configuration (WebRTC requires port forwarding and candidate setup, and lacks H.265 support in some browsers), and requires no internet access for NAT traversal. More importantly, MSE runs over TCP, so every frame arrives and is decoded in order, so nothing is ever silently skipped. WebRTC optimizes for latency over UDP by discarding late or incomplete frames, which works against you on cellular or spotty Wi-Fi: you can end up with frozen video, visual corruption, or gaps in the feed without ever knowing you missed something. Frigate's enhanced MSE player has adaptive speed playback and has been tuned for latency and connection robustness that meets or exceeds WebRTC, so you get near-real-time playback with a guarantee that when the video plays, every frame is actually there - which, for an NVR whose whole purpose is letting you see what happened, matters more than shaving fractions of a second off a latency number. That's why Frigate defaults to MSE and reserves WebRTC for cases that require it, like two-way talk.
