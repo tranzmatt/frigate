@@ -31,7 +31,7 @@ from frigate.api.media_auth import (
     deny_response_for_media_uri,
     is_role_restricted,
 )
-from frigate.config import AuthConfig, NetworkingConfig, ProxyConfig
+from frigate.config import AuthConfig, ProxyConfig
 from frigate.const import CONFIG_DIR, JWT_SECRET_ENV_VAR, PASSWORD_HASH_ALGORITHM
 from frigate.models import User
 
@@ -415,7 +415,7 @@ def create_encoded_jwt(user, role, expiration, secret):
     )
 
 
-def set_jwt_cookie(response: Response, cookie_name, encoded_jwt, expiration, secure):
+def set_jwt_cookie(response: Response, cookie_name, encoded_jwt, max_age, secure):
     # TODO: ideally this would set secure as well, but that requires TLS
     # SameSite is intentionally left unset (browsers default to Lax). Setting
     # SameSite=Lax/Strict would stop the cookie from being sent in cross-origin
@@ -427,7 +427,7 @@ def set_jwt_cookie(response: Response, cookie_name, encoded_jwt, expiration, sec
         key=cookie_name,
         value=encoded_jwt,
         httponly=True,
-        expires=expiration,
+        max_age=max_age,
         secure=secure,
     )
 
@@ -620,18 +620,18 @@ def resolve_role(
 def auth(request: Request):
     auth_config: AuthConfig = request.app.frigate_config.auth
     proxy_config: ProxyConfig = request.app.frigate_config.proxy
-    networking_config: NetworkingConfig = request.app.frigate_config.networking
 
     success_response = Response("", status_code=202)
 
-    # handle case where internal port is a string with ip:port
-    internal_port = networking_config.listen.internal
-    if type(internal_port) is str:
-        internal_port = int(internal_port.split(":")[-1])
-
     # dont require auth if the request is on the internal port
-    # this header is set by Frigate's nginx proxy, so it cant be spoofed
-    if int(request.headers.get("x-server-port", default=0)) == internal_port:
+    # this header is set by Frigate's nginx proxy, so it cant be spoofed.
+    # the port is the boot-time snapshot rather than the live config value:
+    # nginx's listeners are fixed at container start, so an in-memory config
+    # change must never move the port that is trusted here
+    if (
+        int(request.headers.get("x-server-port", default=0))
+        == request.app.auth_internal_port
+    ):
         success_response.headers["remote-user"] = "anonymous"
         success_response.headers["remote-role"] = "admin"
         return success_response
@@ -762,7 +762,7 @@ def auth(request: Request):
                 success_response,
                 JWT_COOKIE_NAME,
                 new_encoded_jwt,
-                new_expiration,
+                JWT_SESSION_LENGTH,
                 JWT_COOKIE_SECURE,
             )
 
@@ -875,7 +875,11 @@ def login(request: Request, body: AppPostLoginBody):
         encoded_jwt = create_encoded_jwt(user, role, expiration, request.app.jwt_token)
         response = Response("", 200)
         set_jwt_cookie(
-            response, JWT_COOKIE_NAME, encoded_jwt, expiration, JWT_COOKIE_SECURE
+            response,
+            JWT_COOKIE_NAME,
+            encoded_jwt,
+            JWT_SESSION_LENGTH,
+            JWT_COOKIE_SECURE,
         )
         # Clear admin_first_time_login flag after successful admin login so the
         # UI stops showing the first-time login documentation link.
@@ -1037,7 +1041,11 @@ async def update_password(
         )
         # Set new JWT cookie on response
         set_jwt_cookie(
-            response, JWT_COOKIE_NAME, encoded_jwt, expiration, JWT_COOKIE_SECURE
+            response,
+            JWT_COOKIE_NAME,
+            encoded_jwt,
+            JWT_SESSION_LENGTH,
+            JWT_COOKIE_SECURE,
         )
 
     return response

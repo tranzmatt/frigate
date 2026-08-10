@@ -156,7 +156,7 @@ Reolink has many different camera models with inconsistently supported features 
 | 6MP or higher     | Latest (ex: Duo3, CX-8##) | http-flv with ffmpeg 8.0, or rtsp | This uses the new http-flv-enhanced over H265 which requires ffmpeg 8.0 (Frigate's default) |
 | 6MP or higher     | Older (ex: RLC-8##)       | rtsp                              |                                                                                             |
 
-Frigate works much better with newer reolink cameras that are setup with the below options:
+Frigate works much better with newer Reolink cameras that are setup with the below options:
 
 If available, recommended settings are:
 
@@ -165,7 +165,7 @@ If available, recommended settings are:
 
 #### Setup via the Add Camera Wizard
 
-The Add Camera Wizard is the recommended way to add a standard Reolink camera. Before starting, make sure HTTP is enabled in the camera's advanced network settings. The wizard uses the camera's HTTP API to determine its resolution and choose the recommended stream type from the table above.
+The [Add Camera Wizard](cameras.md#adding-a-camera-with-the-add-camera-wizard) is the recommended way to add a standard Reolink camera. Before starting, make sure [HTTP is enabled](https://support.reolink.com/articles/360003452893-How-to-Access-Reolink-Cameras-NVRs-Home-Hub-Locally-via-Web-Browsers/) in the camera's advanced network settings. The wizard uses the camera's HTTP API to determine its resolution and choose the recommended stream type from the table above.
 
 1. Click **Add Camera** in <NavPath path="Settings > Global configuration > Camera management" />.
 2. Choose **Manual selection** as the stream detection method and select **Reolink** as the camera brand.
@@ -192,7 +192,7 @@ Reolink's latest cameras support two way audio via go2rtc and other applications
 
 NOTE: The RTSP stream can not be prefixed with `ffmpeg:`, as go2rtc needs to handle the stream to support two way audio.
 
-Ensure HTTP is enabled in the camera's advanced network settings. To use two way talk with Frigate, see the [Live view documentation](/configuration/live#two-way-talk).
+Ensure [HTTP is enabled](https://support.reolink.com/articles/360003452893-How-to-Access-Reolink-Cameras-NVRs-Home-Hub-Locally-via-Web-Browsers/) in the camera's advanced network settings. To use two way talk with Frigate, see the [Live view documentation](/configuration/live#two-way-talk).
 
 :::
 
@@ -204,7 +204,7 @@ go2rtc:
       - "ffmpeg:http://reolink_ip/flv?port=1935&app=bcs&stream=channel0_main.bcs&user=username&password=password#video=copy#audio=copy#audio=opus"
     your_reolink_camera_sub:
       - "ffmpeg:http://reolink_ip/flv?port=1935&app=bcs&stream=channel0_ext.bcs&user=username&password=password"
-    # example for connectin to a Reolink camera that supports two way talk
+    # example for connecting to a Reolink camera that supports two way talk
     your_reolink_camera_twt:
       - "ffmpeg:http://reolink_ip/flv?port=1935&app=bcs&stream=channel0_main.bcs&user=username&password=password#video=copy#audio=copy#audio=opus"
       - "rtsp://username:password@reolink_ip/Preview_01_sub"
@@ -249,7 +249,7 @@ cameras:
 
 :::note
 
-Unifi G5s cameras and newer need a Unifi Protect server to enable rtsps stream, it's not posible to enable it in standalone mode.
+Unifi G5s cameras and newer need a Unifi Protect server to enable rtsps stream, it's not possible to enable it in standalone mode.
 
 :::
 
@@ -264,7 +264,7 @@ go2rtc:
       - rtspx://192.168.1.1:7441/abcdefghijk
 ```
 
-[See the go2rtc docs for more information](https://github.com/AlexxIT/go2rtc/tree/v1.9.13#source-rtsp)
+[See the go2rtc docs for more information](https://github.com/AlexxIT/go2rtc/tree/v1.9.14#source-rtsp)
 
 In the Unifi 2.0 update Unifi Protect Cameras had a change in audio sample rate which causes issues for ffmpeg. The input rate needs to be set for record if used directly with unifi protect.
 

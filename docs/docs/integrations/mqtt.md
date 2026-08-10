@@ -16,7 +16,7 @@ MQTT requires a network connection to your broker. This is typically local, but 
 ### `frigate/available`
 
 Designed to be used as an availability topic with Home Assistant. Possible message are:
-"online": published when Frigate is running (on startup)
+"online": published once Frigate is running and has published its initial state. Note that this is published on every connection to the broker, so it is republished if the broker restarts or the connection drops and recovers, without Frigate itself restarting.
 "stopped": published when Frigate is stopped normally
 "offline": published automatically by the MQTT broker if Frigate disconnects unexpectedly (via MQTT Will Message)
 
@@ -280,7 +280,7 @@ Same data available at `/api/stats` published at a configurable interval.
 
 ### `frigate/camera_activity`
 
-Returns data about each camera, its current features, and if it is detecting motion, objects, etc. Can be triggered by publising to `frigate/onConnect`
+Returns data about each camera, its current features, and if it is detecting motion, objects, etc. Can be triggered by publishing to `frigate/onConnect`
 
 ### `frigate/profile/set`
 
@@ -389,6 +389,18 @@ Topic to turn audio detection for a camera on and off. Expected values are `ON` 
 ### `frigate/<camera_name>/audio/state`
 
 Topic with current state of audio detection for a camera. Published values are `ON` and `OFF`.
+
+### `frigate/<camera_name>/audio_transcription/set`
+
+Topic to turn [live audio transcription](/configuration/audio_detectors#live-transcription) for a camera on and off. Expected values are `ON` and `OFF`. Transcribed text is published to `frigate/<camera_name>/audio/transcription`.
+
+`ON` is ignored unless audio transcription is enabled in the config for the camera. Unlike the other camera toggles, this one is not persisted across Frigate restarts.
+
+**NOTE:** Requires audio detection and transcription to be enabled
+
+### `frigate/<camera_name>/audio_transcription/state`
+
+Topic with current state of live audio transcription for a camera. Published values are `ON` and `OFF`.
 
 ### `frigate/<camera_name>/recordings/set`
 

@@ -31,6 +31,10 @@ from frigate.api.auth import (
     get_allowed_cameras_for_filter,
     require_role,
 )
+from frigate.api.config_util import (
+    publish_camera_section_updates,
+    swap_runtime_config,
+)
 from frigate.api.defs.query.app_query_parameters import AppTimelineHourlyQueryParameters
 from frigate.api.defs.request.app_body import (
     AppConfigSetBody,
@@ -195,7 +199,7 @@ def genai_models(request: Request):
         "before saving the configuration."
     ),
 )
-async def genai_probe(body: GenAIProbeBody):
+async def genai_probe(request: Request, body: GenAIProbeBody):
     load_providers()
 
     provider_cls = PROVIDERS.get(body.provider)
@@ -204,6 +208,13 @@ async def genai_probe(body: GenAIProbeBody):
             status_code=400,
             content={"success": False, "message": "Unknown provider"},
         )
+
+    api_key = body.api_key
+    if api_key == REDACTED_CREDENTIAL_SENTINEL:
+        saved_cfg = (
+            request.app.frigate_config.genai.get(body.name) if body.name else None
+        )
+        api_key = saved_cfg.api_key if saved_cfg else None
 
     # The OpenAI-compatible SDKs accept "timeout" as a constructor kwarg via
     # provider_options; other plugins use GenAIClient.timeout passed below.
@@ -216,7 +227,7 @@ async def genai_probe(body: GenAIProbeBody):
     try:
         transient_cfg = GenAIConfig(
             provider=body.provider,
-            api_key=body.api_key,
+            api_key=api_key,
             base_url=body.base_url,
             provider_options=probe_provider_options,
             # model is required by the schema but irrelevant for listing.
@@ -915,19 +926,7 @@ def config_set(request: Request, body: AppConfigSetBody):
 
             if body.requires_restart == 0 or body.update_topic:
                 old_config: FrigateConfig = request.app.frigate_config
-                request.app.frigate_config = config
-                request.app.genai_manager.update_config(config)
-
-                if request.app.profile_manager is not None:
-                    request.app.profile_manager.update_config(config)
-
-                if request.app.stats_emitter is not None:
-                    request.app.stats_emitter.config = config
-
-                if request.app.dispatcher is not None:
-                    request.app.dispatcher.config = config
-                    for comm in request.app.dispatcher.comms:
-                        comm.config = config
+                swap_runtime_config(request.app, config)
 
                 if body.update_topic:
                     if body.update_topic.startswith("config/cameras/"):
@@ -967,11 +966,26 @@ def config_set(request: Request, body: AppConfigSetBody):
                             body.update_topic, settings
                         )
 
+                        # a config/cameras/* topic publishes camera copies, a
+                        # global topic the global object. FrigateConfig.parse
+                        # folds some global sections down into every camera,
+                        # and workers read both objects, so any such section
+                        # needs its camera copies sent alongside the global
+                        # publish above.
+                        if body.update_topic == "config/birdseye":
+                            publish_camera_section_updates(
+                                request.app, config, CameraConfigUpdateEnum.birdseye
+                            )
+
             return JSONResponse(
                 content=(
                     {
                         "success": True,
-                        "message": "Config successfully updated, restart to apply",
+                        "message": (
+                            "Config successfully updated"
+                            if body.requires_restart == 0
+                            else "Config successfully updated, restart to apply"
+                        ),
                     }
                 ),
                 status_code=200,
