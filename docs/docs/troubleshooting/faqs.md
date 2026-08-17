@@ -65,9 +65,17 @@ This is because Frigate does not run in host mode so localhost points to the Fri
 
 ### How do I know if my camera is offline
 
-A camera being offline can be detected via MQTT or /api/stats, the camera_fps for any offline camera will be 0.
+Frigate publishes a per-role health status to [`frigate/<camera_name>/status/<role>`](/integrations/mqtt#frigatecamera_namestatusrole), where `<role>` is each enabled role on the camera (`detect`, `record`, and `audio`). The published value is one of:
 
-Also, Home Assistant will mark any offline camera as being unavailable when the camera is offline.
+- `online`: Frigate's process for that role is running normally
+- `offline`: the process is down and Frigate is restarting it
+- `disabled`: the camera is turned off, either at runtime or in the configuration file
+
+These reflect the state of Frigate's process for that role, not the camera's reachability, so an unreachable camera alternates between `offline` and `online` as the watchdog restarts ffmpeg. Wait for the status to hold steady (for example with Home Assistant's `for:`) rather than acting on a single message.
+
+Because the status is per role, a camera whose substream is fine but whose recording stream has dropped will report `online` for `detect` and `offline` for `record`. The status is republished whenever it changes.
+
+You can also detect an offline camera through `/api/stats`, where `camera_fps` will be 0.
 
 ### How can I view the Frigate log files without using the Web UI?
 
@@ -124,6 +132,12 @@ cameras:
       width: 1280
       height: 720
 ```
+
+### What is the `version` key in my config file?
+
+`version` records the config format that your config was last migrated to. On startup Frigate compares it against the format the running version expects, and if it is older it copies your config to `/config/backup_config.yaml`, rewrites it to the new format, and updates `version` as the final step. A config with no `version` key is assumed to predate 0.14 and is migrated from there.
+
+Frigate manages this key for you, so do not set or edit it. Raising it makes Frigate skip migrations your config still needs, and lowering it re-runs migrations against config that has already been converted. Either can leave you with a config that no longer validates.
 
 ### Why does Frigate keep creating new tracked objects for my parked car?
 
