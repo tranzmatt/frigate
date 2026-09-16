@@ -10,7 +10,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { StatusBarMessagesContext } from "@/context/statusbar-provider";
+import { StatusBarMessagesContext } from "@/context/statusbar-context";
 import { FrigateConfig } from "@/types/frigateConfig";
 import { zodResolver } from "@hookform/resolvers/zod";
 import axios from "axios";
@@ -371,9 +371,9 @@ export default function NotificationsSettingsExtras({
 
   const shouldFetchPubKey = Boolean(
     config &&
-      (config.notifications?.enabled || anyCameraNotificationsEnabled) &&
-      (watchAllEnabled ||
-        (Array.isArray(watchCameras) && watchCameras.length > 0)),
+    (config.notifications?.enabled || anyCameraNotificationsEnabled) &&
+    (watchAllEnabled ||
+      (Array.isArray(watchCameras) && watchCameras.length > 0)),
   );
 
   const { data: publicKey } = useSWR(
