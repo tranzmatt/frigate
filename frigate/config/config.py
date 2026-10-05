@@ -19,7 +19,7 @@ from ruamel.yaml import YAML
 
 from frigate.const import REGEX_JSON
 from frigate.detectors import ModelConfig
-from frigate.detectors.detector_config import SceneEnum
+from frigate.detectors.detector_config import DEFAULT_SCENE
 from frigate.detectors.device import DeviceParseError, DeviceSpec, parse_device
 from frigate.plus import PlusApi
 from frigate.util.builtin import (
@@ -35,6 +35,13 @@ from frigate.util.config import (
     migrate_frigate_config,
 )
 from frigate.util.image import create_mask
+from frigate.util.live_streams import (
+    default_transcode_source,
+    is_transcode_stream_name,
+    transcode_stream_name,
+    transcode_streams,
+)
+from frigate.util.runtime_deps import sha256_of
 from frigate.util.services import auto_detect_hwaccel
 
 from .auth import AuthConfig
@@ -282,11 +289,78 @@ def verify_config_roles(camera_config: CameraConfig) -> None:
         )
 
 
+def apply_live_transcode_streams(
+    frigate_config: FrigateConfig, camera_config: CameraConfig
+) -> None:
+    """Fold a camera's transcoded streams into its live stream list.
+
+    Enabled qualities missing from live.streams are appended, and entries the
+    user placed keep their position. Transcoded names that are no longer
+    generated are dropped unless they name a real go2rtc stream.
+    """
+    live = camera_config.live
+    transcode = live.transcode
+    go2rtc_streams = frigate_config.go2rtc.model_dump().get("streams") or {}
+    generated: dict[str, str] = {}
+
+    if transcode.enabled:
+        if transcode.source is None:
+            transcode.source = default_transcode_source(
+                camera_config.name, live.streams
+            )
+
+        if transcode.source not in go2rtc_streams:
+            raise ValueError(
+                f"Camera {camera_config.name} has transcoded streams enabled, but its source {transcode.source} is not a go2rtc stream."
+            )
+
+        generated = transcode_streams(
+            camera_config.name,
+            transcode.source,
+            [quality.model_dump() for quality in transcode.qualities],
+        )
+
+        for name in generated:
+            if name in go2rtc_streams:
+                raise ValueError(
+                    f"Camera {camera_config.name} generates transcoded stream {name}, which collides with a go2rtc stream of the same name."
+                )
+
+    streams = {
+        label: name
+        for label, name in live.streams.items()
+        if name in generated
+        or name in go2rtc_streams
+        or not is_transcode_stream_name(camera_config.name, name)
+    }
+    placed = set(streams.values())
+
+    for quality in transcode.qualities if transcode.enabled else []:
+        name = transcode_stream_name(camera_config.name, quality.height)
+
+        if name in placed:
+            continue
+
+        label = f"{quality.height}p"
+
+        if label in streams:
+            raise ValueError(
+                f"Camera {camera_config.name} already has a live stream named {label}; rename it or place the transcoded stream under another name."
+            )
+
+        streams[label] = name
+
+    live.streams = streams
+
+
 def verify_valid_live_stream_names(
     frigate_config: FrigateConfig, camera_config: CameraConfig
 ) -> ValueError | None:
     """Verify that a restream exists to use for live view."""
     for _, stream_name in camera_config.live.streams.items():
+        if is_transcode_stream_name(camera_config.name, stream_name):
+            continue
+
         if (
             stream_name
             not in frigate_config.go2rtc.model_dump().get("streams", {}).keys()
@@ -536,7 +610,7 @@ class FrigateConfig(FrigateBaseModel):
     models: list[ModelConfig] = Field(
         default_factory=_default_models,
         title="Detection models",
-        description="Object detection models and the hardware each one runs on. Cameras pick a model by matching their detect.scene against a model's scene.",
+        description="Object detection models and the hardware each one runs on. Cameras pick a model by matching their detect.scene against a model's scene, falling back to the 'default' model.",
     )
 
     # GenAI config (named provider configs: name -> GenAIConfig)
@@ -651,7 +725,9 @@ class FrigateConfig(FrigateBaseModel):
     )
 
     _plus_api: PlusApi
-    _model_devices: dict[SceneEnum, list[DeviceSpec]]
+    _model_devices: dict[str, list[DeviceSpec]]
+    # scene -> model, including the scenes of duplicate models folded into another
+    _scene_models: dict[str, ModelConfig]
     _camera_models: dict[str, ModelConfig]
     _all_attributes: list[str]
     _all_attribute_logos: list[str]
@@ -686,7 +762,7 @@ class FrigateConfig(FrigateBaseModel):
     def primary_model(self) -> ModelConfig:
         """The model used when no specific camera is in play."""
         for model in self.models:
-            if model.scene == SceneEnum.all:
+            if model.scene == DEFAULT_SCENE:
                 return model
 
         return self.models[0]
@@ -708,7 +784,7 @@ class FrigateConfig(FrigateBaseModel):
 
         if model is None:
             camera = self.cameras.get(camera_name)
-            scene = camera.detect.scene if camera is not None else SceneEnum.all
+            scene = camera.detect.scene if camera is not None else DEFAULT_SCENE
             model = self._resolve_camera_model(camera_name, scene)
             self._camera_models[camera_name] = model
 
@@ -768,14 +844,14 @@ class FrigateConfig(FrigateBaseModel):
         if not self.models:
             raise ValueError("At least one model must be configured under models")
 
-        model_devices: dict[SceneEnum, list[DeviceSpec]] = {}
+        model_devices: dict[str, list[DeviceSpec]] = {}
         # device string -> the scene of the model that already claimed it
-        claimed_devices: dict[str, SceneEnum] = {}
+        claimed_devices: dict[str, str] = {}
 
         for index, model in enumerate(self.models):
-            scene = model.scene.value
+            scene = model.scene
 
-            if model.scene in model_devices:
+            if scene in model_devices:
                 raise ValueError(
                     f"Multiple models are configured with a scene of '{scene}'. Each model must use a different scene."
                 )
@@ -804,17 +880,20 @@ class FrigateConfig(FrigateBaseModel):
                     other = claimed_devices[device.raw]
                     where = (
                         f"twice by model '{scene}'"
-                        if other == model.scene
-                        else f"by both the '{other.value}' and '{scene}' models"
+                        if other == scene
+                        else f"by both the '{other}' and '{scene}' models"
                     )
                     raise ValueError(
                         f"Device '{device.raw}' is used {where}, but it can only run one detection process."
                     )
 
-                claimed_devices[device.raw] = model.scene
+                claimed_devices[device.raw] = scene
 
             self.models[index] = self._load_model(model, devices[0].detector)
-            model_devices[model.scene] = devices
+            model_devices[scene] = devices
+
+        self._scene_models = {model.scene: model for model in self.models}
+        self._consolidate_duplicate_models(model_devices)
 
         attributes: set[str] = set()
         attribute_logos: set[str] = set()
@@ -838,36 +917,107 @@ class FrigateConfig(FrigateBaseModel):
         }
         self._all_labels = labels
 
-    def _resolve_camera_model(self, name: str, scene: SceneEnum) -> ModelConfig:
+    def _consolidate_duplicate_models(
+        self, model_devices: dict[str, list[DeviceSpec]]
+    ) -> None:
+        """Fold models that load the same model file into a single model.
+
+        Separate scenes for one model only split the same work across separate
+        detection queues, so each device serves fewer cameras and is slower
+        overall than one shared model. The duplicate's devices are moved to the
+        model it duplicates and its scene resolves to that model.
+
+        Args:
+            model_devices: Scene to parsed devices, updated in place
+        """
+        kept: list[ModelConfig] = []
+        hashes: dict[str, str | None] = {}
+
+        def file_hash(path: str) -> str | None:
+            if path not in hashes:
+                hashes[path] = sha256_of(path) if os.path.isfile(path) else None
+
+            return hashes[path]
+
+        def same_model(a: ModelConfig, b: ModelConfig) -> bool:
+            # a model's devices all share a detector, so folding across
+            # detectors would produce an invalid model
+            if model_devices[a.scene][0].detector != model_devices[b.scene][0].detector:
+                return False
+
+            if not a.path or not b.path:
+                return False
+
+            if os.path.realpath(a.path) == os.path.realpath(b.path):
+                return True
+
+            a_hash = file_hash(a.path)
+            return a_hash is not None and a_hash == file_hash(b.path)
+
+        for model in self.models:
+            original = next((other for other in kept if same_model(other, model)), None)
+
+            if original is None:
+                kept.append(model)
+                continue
+
+            # keep the default model so cameras without a scene still find it
+            if model.scene == DEFAULT_SCENE:
+                kept[kept.index(original)] = model
+                original, model = model, original
+
+            logger.warning(
+                "Models '%s' and '%s' use the same model file, so they have been combined into the '%s' model. Defining one model under several scenes to assign detectors to specific cameras is slower and less efficient than letting every detector serve every camera. Remove the '%s' model and list its devices under the '%s' model instead",
+                original.scene,
+                model.scene,
+                original.scene,
+                model.scene,
+                original.scene,
+            )
+            original.devices = [*original.devices, *model.devices]
+            model_devices[original.scene] = [
+                *model_devices[original.scene],
+                *model_devices.pop(model.scene),
+            ]
+            self._scene_models[model.scene] = original
+
+            # anything already folded into the duplicate follows it
+            for scene, target in self._scene_models.items():
+                if target is model:
+                    self._scene_models[scene] = original
+
+        self.models = kept
+
+    def _resolve_camera_model(self, name: str, scene: str) -> ModelConfig:
         """Resolve which model a camera runs on.
 
         A camera may name a scene no model is configured for, which is valid as
-        long as an 'all' model is there to fall back to.
+        long as a 'default' model is there to fall back to.
 
         Args:
             name: Name of the camera
-            scene: The camera's detect scene, which defaults to 'all'
+            scene: The camera's detect scene, which defaults to 'default'
 
         Returns:
             The model the camera runs on
         """
-        by_scene = {model.scene: model for model in self.models}
-        model = by_scene.get(scene)
+        model = self._scene_models.get(scene)
 
         if model is not None:
             return model
 
-        default = by_scene.get(SceneEnum.all)
+        default = self._scene_models.get(DEFAULT_SCENE)
 
         if default is None:
             raise ValueError(
-                f"Camera '{name}' has a detect scene of '{scene.value}', but no model is configured for that scene or for 'all'."
+                f"Camera '{name}' has a detect scene of '{scene}', but no model is configured for that scene or for '{DEFAULT_SCENE}'."
             )
 
         logger.warning(
-            "Camera '%s' has a detect scene of '%s', but no model is configured for that scene, so the 'all' model is used",
+            "Camera '%s' has a detect scene of '%s', but no model is configured for that scene, so the '%s' model is used",
             name,
-            scene.value,
+            scene,
+            DEFAULT_SCENE,
         )
         return default
 
@@ -978,6 +1128,8 @@ class FrigateConfig(FrigateBaseModel):
                 "face_recognition": ["enabled", "min_area"],
                 "lpr": ["enabled", "expire_time", "min_area", "enhancement"],
                 "audio_transcription": ["enabled", "live_enabled"],
+                # transcode is camera-level only
+                "live": ["streams", "height", "quality"],
             }
 
             for section in allowed_fields_map:
@@ -997,6 +1149,10 @@ class FrigateConfig(FrigateBaseModel):
 
             camera_model = self._resolve_camera_model(name, camera_config.detect.scene)
             self._camera_models[name] = camera_model
+
+            # point cameras at the model their duplicate scene was folded into
+            if camera_config.detect.scene in self._scene_models:
+                camera_config.detect.scene = camera_model.scene
 
             if camera_config.ffmpeg.hwaccel_args == "auto":
                 camera_config.ffmpeg.hwaccel_args = self.ffmpeg.hwaccel_args
@@ -1205,6 +1361,8 @@ class FrigateConfig(FrigateBaseModel):
             # Set live view stream if none is set
             if not camera_config.live.streams:
                 camera_config.live.streams = {name: name}
+
+            apply_live_transcode_streams(self, camera_config)
 
             # generate the ffmpeg commands
             camera_config.create_ffmpeg_cmds()

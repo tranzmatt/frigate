@@ -1162,7 +1162,9 @@
       "actions": "Actions",
       "noRoles": "No custom roles found.",
       "editCameras": "Edit Cameras",
-      "deleteRole": "Delete Role"
+      "deleteRole": "Delete Role",
+      "cameraCount_one": "{{count}} camera",
+      "cameraCount_other": "{{count}} cameras"
     },
     "toast": {
       "success": {
@@ -1553,7 +1555,27 @@
       "noGo2rtcStreams": "No go2rtc streams configured",
       "availableStreams": "Available streams",
       "useCustom": "Use \"{{value}}\"",
-      "addStream": "Add stream"
+      "addStream": "Add stream",
+      "reorderHandle": "Drag to reorder",
+      "transcodedBadge": "Transcoded",
+      "autoOrder": "Auto order",
+      "autoOrderTips": "Measure each stream's bitrate and sort highest first",
+      "measuring": "Measuring…",
+      "rate": "{{kbps}} kbps",
+      "rateSet": "{{kbps}} kbps (set)",
+      "rateFailed": "Couldn't measure"
+    },
+    "liveTranscode": {
+      "title": "Transcoded streams",
+      "description": "Adds lower-quality streams that go2rtc transcodes in real time while someone is watching.",
+      "unavailable": "Transcoded streams need a go2rtc stream to read from. Add one under go2rtc streams first.",
+      "enable": "Enable transcoded streams",
+      "source": "Source stream",
+      "height": "Height",
+      "heightOption": "{{height}}p",
+      "bitrate": "Bitrate (kbps)",
+      "addQuality": "Add quality",
+      "removeQuality": "Remove quality"
     },
     "timezone": {
       "defaultOption": "Use browser timezone"
@@ -1788,6 +1810,7 @@
   "toast": {
     "success": "Settings saved successfully",
     "applied": "Settings applied successfully",
+    "go2rtcSyncFailed": "Saved, but go2rtc couldn't be updated. Restart Frigate to apply.",
     "successRestartRequired": "Settings saved successfully. Restart Frigate to apply your changes.",
     "error": "Failed to save settings",
     "validationError": "Validation failed: {{message}}",
@@ -1986,7 +2009,7 @@
       "fpsGreaterThanFive": "Setting the detect FPS higher than 5 is not recommended. Higher values may cause performance issues and will not provide any benefit.",
       "disabled": "Object detection is disabled. Snapshots, review items, and enrichments such as face recognition, license plate recognition, and Generative AI will not function.",
       "runtimeDisabled": "Object detection is enabled in your config, but it is currently turned off for this camera. Snapshots, review items, and enrichments such as face recognition, license plate recognition, and Generative AI will not function until it is turned back on from the camera's live view, or until the active profile stops disabling it.",
-      "sceneWithoutModel": "No detection model is configured for this scene, so this camera falls back to the model with a scene of 'All cameras'. Add a model for this scene to give the camera its own.",
+      "sceneWithoutModel": "No detection model is configured for this scene, so this camera falls back to the Default model. Add a model for this scene to give the camera its own.",
       "resolutionShouldBeMultipleOfFour": "For best results, detect width and height should be multiples of 4. Other even values may produce visual artifacts or slight distortion in the detect stream.",
       "aspectRatioMismatch": "The width and height you've entered don't match the aspect ratio of your current detect resolution. This may produce a stretched or distorted image.",
       "maxFramesSet": "Setting max frames overrides default behavior and disables stationary object tracking. There are very few situations where this is needed, use with caution.",
@@ -2017,7 +2040,11 @@
     },
     "record": {
       "noRecordRole": "No streams have the record role defined. Recording will not function.",
-      "noRecordSubRole": "No streams have the record_sub role defined. Sub stream recording will not function."
+      "noRecordSubRole": "No streams have the record_sub role defined. Sub stream recording will not function.",
+      "profileBaseDisabled": "Recording is disabled in this camera's base config, so enabling it in a profile has no effect. Enable recording in the base config and use a profile to disable it instead."
+    },
+    "notifications": {
+      "profileBaseDisabled": "No cameras have notifications enabled in their base config, so enabling them in a profile has no effect. Enable notifications in the base config of at least one camera."
     },
     "birdseye": {
       "objectTrackingDetectDisabled": "Birdseye includes tracked objects, but object detection is disabled for this camera. The camera will not appear in Birdseye.",
@@ -2036,20 +2063,17 @@
   },
   "detectionModels": {
     "title": "Detection models",
-    "description": "Configure the object detection models and the hardware each one runs on. Cameras choose a model by their scene in the camera's detect settings.",
+    "description": "Configure the object detection models and the hardware each one runs on. Add a model for a scene only when some cameras need a differently trained model, such as thermal cameras. Cameras choose a model by their scene in the camera's detect settings.",
     "addModel": "Add model",
     "cameras_one": "{{count}} camera",
     "cameras_other": "{{count}} cameras",
     "scene": {
       "label": "Scene",
-      "description": "The environment this model is for. Cameras pick a model by setting the same scene in their detect settings, and the model with a scene of all is used by any camera that does not set one."
+      "placeholder": "thermal",
+      "description": "A name for the cameras this model is for. Cameras pick a model by setting the same scene in their detect settings, and the Default model is used by any camera that does not set one. Use scenes to run different models, not to split one model across hardware, since models that use the same model file are combined."
     },
     "scenes": {
-      "all": "All cameras",
-      "indoor": "Indoor",
-      "outdoor": "Outdoor",
-      "indoor_thermal": "Indoor thermal",
-      "outdoor_thermal": "Outdoor thermal"
+      "default": "Default"
     },
     "hardware": {
       "label": "Hardware",
