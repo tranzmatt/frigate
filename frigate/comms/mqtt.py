@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import queue
+import selectors
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -56,6 +58,11 @@ class MqttClient(Communicator):
         self._next_connect_time = 0.0
         self._last_on_connect_dispatch = 0.0
 
+        # lets other threads interrupt the worker's socket wait
+        self._wake_recv, self._wake_send = socket.socketpair()
+        self._wake_recv.setblocking(False)
+        self._wake_send.setblocking(False)
+
     def subscribe(self, receiver: Callable) -> None:
         """Wrapper for allowing dispatcher to subscribe."""
         self._dispatcher = receiver
@@ -85,6 +92,7 @@ class MqttClient(Communicator):
             return
 
         self._publish_queue.put(QueuedPublish(full_topic, payload, retain))
+        self._wake_worker()
 
     def stop(self) -> None:
         if self._worker is None:
@@ -100,9 +108,11 @@ class MqttClient(Communicator):
                     publish_done,
                 )
             )
+            self._wake_worker()
             publish_done.wait(MQTT_SHUTDOWN_FLUSH_TIMEOUT)
 
         self._stop_event.set()
+        self._wake_worker()
 
         if self.client is not None:
             try:
@@ -358,7 +368,7 @@ class MqttClient(Communicator):
             deadline = time.monotonic() + MQTT_SHUTDOWN_FLUSH_TIMEOUT
             while not message_info.is_published() and time.monotonic() < deadline:
                 if (
-                    self.client.loop(timeout=MQTT_PUBLISH_WAIT_INTERVAL)
+                    self._loop_client(timeout=MQTT_PUBLISH_WAIT_INTERVAL)
                     != mqtt.MQTT_ERR_SUCCESS
                 ):
                     break
@@ -367,6 +377,51 @@ class MqttClient(Communicator):
                 "MQTT is dormant and the broker could not be told Frigate is offline",
                 exc_info=True,
             )
+
+    def _wake_worker(self) -> None:
+        try:
+            self._wake_send.send(b"\0")
+        except BlockingIOError:
+            # the buffer is full, so a wake is already pending
+            pass
+
+    def _loop_client(self, timeout: float) -> int:
+        """Drive Paho without select()'s limit on socket file descriptors."""
+        assert self.client is not None
+        client = self.client
+        sock = client.socket()
+        if sock is None:
+            return mqtt.MQTT_ERR_NO_CONN
+
+        events = selectors.EVENT_READ
+        if client.want_write():
+            events |= selectors.EVENT_WRITE
+        # TLS can have decrypted bytes buffered even when the socket is not ready.
+        pending = hasattr(sock, "pending") and sock.pending() > 0
+        with selectors.DefaultSelector() as selector:
+            selector.register(sock, events)
+            selector.register(self._wake_recv, selectors.EVENT_READ)
+            ready = {
+                key.fileobj: mask
+                for key, mask in selector.select(0.0 if pending else timeout)
+            }
+
+        if self._wake_recv in ready:
+            try:
+                self._wake_recv.recv(4096)
+            except BlockingIOError:
+                pass
+
+        ready_events = ready.get(sock, 0)
+        if pending or ready_events & selectors.EVENT_READ:
+            result = client.loop_read()
+            if result != mqtt.MQTT_ERR_SUCCESS or client.socket() is None:
+                return result
+        if ready_events & selectors.EVENT_WRITE:
+            result = client.loop_write()
+            if result != mqtt.MQTT_ERR_SUCCESS or client.socket() is None:
+                return result
+        return client.loop_misc()
 
     def _mqtt_loop_worker(self) -> None:
         # The worker owns all socket I/O so reconnect, subscribe, and publish
@@ -384,7 +439,7 @@ class MqttClient(Communicator):
 
             assert self.client is not None
             try:
-                result = self.client.loop(timeout=MQTT_LOOP_TIMEOUT)
+                result = self._loop_client(timeout=MQTT_LOOP_TIMEOUT)
             except (OSError, mqtt.WebsocketConnectionError) as err:
                 logger.warning("MQTT loop error: %s", err)
                 self._schedule_reconnect()
@@ -617,7 +672,7 @@ class MqttClient(Communicator):
                 return
 
             try:
-                result = self.client.loop(timeout=MQTT_PUBLISH_WAIT_INTERVAL)
+                result = self._loop_client(timeout=MQTT_PUBLISH_WAIT_INTERVAL)
             except (OSError, mqtt.WebsocketConnectionError) as err:
                 logger.warning("MQTT publish wait failed: %s", err)
                 self._schedule_reconnect()

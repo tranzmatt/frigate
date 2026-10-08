@@ -126,12 +126,18 @@ class TestMqttClientLifecycle(unittest.TestCase):
             os.makedirs(MODEL_CACHE_DIR)
 
         self.config = build_config()
-        self.client = MqttClient(self.config)
+        self.client = self._build_client()
         self.receiver = RuntimeSnapshotReceiver()
         self.client.attach_dispatcher(build_dispatcher(self.config, []))
 
-    def test_subscribe_stores_receiver_without_starting_worker(self) -> None:
+    def _build_client(self) -> MqttClient:
         client = MqttClient(self.config)
+        self.addCleanup(client._wake_recv.close)
+        self.addCleanup(client._wake_send.close)
+        return client
+
+    def test_subscribe_stores_receiver_without_starting_worker(self) -> None:
+        client = self._build_client()
 
         with patch.object(client, "_start_worker") as mock_start_worker:
             client.subscribe(self.receiver._receive)
@@ -142,7 +148,7 @@ class TestMqttClientLifecycle(unittest.TestCase):
         mock_start_worker.assert_not_called()
 
     def test_attach_dispatcher_supplies_command_surface(self) -> None:
-        client = MqttClient(self.config)
+        client = self._build_client()
 
         self.assertFalse(client._is_supported_command_topic("front/detect/set"))
 
@@ -294,6 +300,13 @@ class TestMqttClientLifecycle(unittest.TestCase):
         self.assertTrue(self.client.connected)
         self.assertEqual(self.client._subscription_mid, 42)
         self.client.client.subscribe.assert_called_once_with("frigate/#", qos=0)
+
+    def test_publish_wakes_worker(self) -> None:
+        self.client.connected = True
+
+        self.client.publish("events", "payload")
+
+        self.assertEqual(self.client._wake_recv.recv(16), b"\0")
 
     def test_handle_connect_event_reconnects_on_recoverable_subscribe_error(
         self,
@@ -448,7 +461,6 @@ class TestMqttClientLifecycle(unittest.TestCase):
 
     def test_publish_direct_waits_for_flush_barrier(self) -> None:
         mock_client = MagicMock()
-        mock_client.loop.return_value = mqtt.MQTT_ERR_SUCCESS
         self.client.client = mock_client
         message_info = MagicMock(rc=mqtt.MQTT_ERR_SUCCESS, mid=1)
         # inflight tracking checks once, then _wait_for_publish polls
@@ -456,11 +468,14 @@ class TestMqttClientLifecycle(unittest.TestCase):
         mock_client.publish.return_value = message_info
         barrier = MagicMock()
 
-        self.client._publish_direct(
-            QueuedPublish("frigate/available", "stopped", True, barrier)
-        )
+        with patch.object(
+            self.client, "_loop_client", return_value=mqtt.MQTT_ERR_SUCCESS
+        ) as mock_loop:
+            self.client._publish_direct(
+                QueuedPublish("frigate/available", "stopped", True, barrier)
+            )
 
-        mock_client.loop.assert_called_once()
+        mock_loop.assert_called_once()
         barrier.set.assert_called_once()
 
     def test_shutdown_barrier_releases_when_publish_raises(self) -> None:
@@ -643,9 +658,8 @@ class TestMqttClientLifecycle(unittest.TestCase):
             loop_calls[0] += 1
             return mqtt.MQTT_ERR_SUCCESS
 
-        mock_client.loop.side_effect = loop_side_effect
-
-        self.client._wait_for_publish(message_info)
+        with patch.object(self.client, "_loop_client", side_effect=loop_side_effect):
+            self.client._wait_for_publish(message_info)
 
         self.assertEqual(loop_calls[0], 1)
         self.assertIsNone(self.client.client)
@@ -669,16 +683,20 @@ class TestMqttClientLifecycle(unittest.TestCase):
 
     def test_mqtt_loop_worker_reconnects_on_recoverable_loop_error(self) -> None:
         self.client.client = MagicMock()
-        self.client.client.loop.side_effect = OSError("socket closed")
 
         def stop_after_reconnect() -> None:
             self.client._stop_event.set()
 
-        with patch.object(
-            self.client,
-            "_schedule_reconnect",
-            side_effect=stop_after_reconnect,
-        ) as mock_schedule_reconnect:
+        with (
+            patch.object(
+                self.client, "_loop_client", side_effect=OSError("socket closed")
+            ),
+            patch.object(
+                self.client,
+                "_schedule_reconnect",
+                side_effect=stop_after_reconnect,
+            ) as mock_schedule_reconnect,
+        ):
             self.client._mqtt_loop_worker()
 
         mock_schedule_reconnect.assert_called_once()
