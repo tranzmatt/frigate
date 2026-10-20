@@ -12,8 +12,8 @@ from pathlib import Path
 
 import psutil
 import uvicorn
+from peewee import SqliteDatabase
 from peewee_migrate import Router
-from playhouse.sqlite_ext import SqliteExtDatabase
 
 from frigate.api.auth import hash_password
 from frigate.api.fastapi_app import create_fastapi_app
@@ -186,7 +186,7 @@ class FrigateApp:
         self.timeline_queue: Queue = mp.Queue()
 
     def init_database(self) -> None:
-        def vacuum_db(db: SqliteExtDatabase) -> None:
+        def vacuum_db(db: SqliteDatabase) -> None:
             logger.info("Running database vacuum")
             db.execute_sql("VACUUM;")
 
@@ -197,7 +197,7 @@ class FrigateApp:
                 logger.error("Unable to write to /config to save DB state")
 
         # Migrate DB schema
-        migrate_db = SqliteExtDatabase(self.config.database.path)
+        migrate_db = SqliteDatabase(self.config.database.path)
 
         # Run migrations
         del logging.getLogger("peewee_migrate").handlers[:]
@@ -581,7 +581,12 @@ class FrigateApp:
 
     def init_auth(self) -> None:
         if self.config.auth.enabled:
-            if User.select().count() == 0:
+            if (
+                User.select().count() == 0
+                or User.select()
+                .where((User.username == "admin") & (User.password_hash == ""))
+                .exists()
+            ):
                 password = secrets.token_hex(16)
                 password_hash = hash_password(
                     password, iterations=self.config.auth.hash_iterations
@@ -593,6 +598,9 @@ class FrigateApp:
                         User.password_hash: password_hash,
                         User.notification_tokens: [],
                     }
+                ).on_conflict(
+                    conflict_target=[User.username],
+                    update={User.password_hash: password_hash},
                 ).execute()
 
                 self.config.auth.admin_first_time_login = True
@@ -614,6 +622,7 @@ class FrigateApp:
                     username="admin",
                     role="admin",
                     password_hash=password_hash,
+                    password_changed_at=datetime.datetime.now(),
                     notification_tokens=[],
                 ).execute()
 
@@ -623,6 +632,19 @@ class FrigateApp:
                 logger.info(f"***    Password: {password}   ***")
                 logger.info("********************************************************")
                 logger.info("********************************************************")
+        else:
+            # Notification registrations store tokens on the admin row. Its
+            # empty password hash marks it for a generated password if auth
+            # is enabled later.
+            if User.select().count() == 0:
+                User.insert(
+                    {
+                        User.username: "admin",
+                        User.role: "admin",
+                        User.password_hash: "",
+                        User.notification_tokens: [],
+                    }
+                ).execute()
 
     def start(self) -> None:
         logger.info(f"Starting Frigate ({VERSION})")

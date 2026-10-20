@@ -5,7 +5,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from playhouse.sqlite_ext import SqliteExtDatabase
+from peewee import SqliteDatabase
 
 from frigate.api.media import _vod_response
 from frigate.const import MAX_SEGMENT_DURATION
@@ -13,8 +13,10 @@ from frigate.models import Recordings
 from frigate.util.recording_coverage import (
     _rows_query,
     coverage_spans,
+    null_audio_glitches,
     plan_clip,
     realized_timeline,
+    recording_overlap,
     resolve_coverage,
     stream_media_summary,
 )
@@ -24,7 +26,7 @@ class CoverageDbTestCase(unittest.TestCase):
     def setUp(self):
         # in-memory database keeps these tests isolated from the shared
         # on-disk test.db used by the http api tests
-        self.db = SqliteExtDatabase(":memory:")
+        self.db = SqliteDatabase(":memory:")
         models = [Recordings]
         self.db.bind(models)
         self.db.create_tables(models)
@@ -166,6 +168,22 @@ class TestRecordingCoverage(CoverageDbTestCase):
         expected = int(5 * 1024 * 1024 * 8 / 10)
         assert summary["main"]["bitrate"] == expected
 
+    def test_unknown_audio_row_keeps_video_only_stream(self):
+        self._insert("s1", 1000.0, 1010.0, "sub", has_audio=False)
+        self._insert("s2", 1010.0, 1020.0, "sub", has_audio=None)
+        self._insert("s3", 1020.0, 1030.0, "sub", has_audio=False)
+        kept = null_audio_glitches(resolve_coverage("front_door", 1000.0, 1030.0))
+        self.assertEqual(
+            [i.sub.path for i in kept], [f"/tmp/s{n}.mp4" for n in (1, 2, 3)]
+        )
+
+    def test_video_only_glitch_dropped_on_audio_stream(self):
+        self._insert("s1", 1000.0, 1010.0, "sub", has_audio=True)
+        self._insert("s2", 1010.0, 1020.0, "sub", has_audio=False)
+        self._insert("s3", 1020.0, 1030.0, "sub", has_audio=None)
+        kept = null_audio_glitches(resolve_coverage("front_door", 1000.0, 1030.0))
+        self.assertEqual([i.sub.path for i in kept], ["/tmp/s1.mp4", "/tmp/s3.mp4"])
+
     def test_other_camera_rows_excluded(self):
         self._insert("m1", 1000.0, 1010.0, "main")
         self._insert("o1", 1000.0, 1010.0, "main", camera="back_yard")
@@ -257,6 +275,33 @@ class TestRecordingCoverage(CoverageDbTestCase):
         plan = plan_clip(row, 1000.1, 1000.15)
         assert plan.skipped
         assert plan.duration_ms == 0
+
+
+class TestRecordingOverlap(CoverageDbTestCase):
+    def test_matches_unbounded_overlap(self):
+        spans = [(1000, 1010), (1010, 1020), (1100, 1100 + MAX_SEGMENT_DURATION - 0.5)]
+        for i, (start, end) in enumerate(spans):
+            self._insert(f"r{i}", start, end, "main")
+
+        probes = [995, 1000, 1005, 1010, 1015, 1020, 1050, 1100, 1650, 1699.5, 1700]
+        for after in probes:
+            for before in probes:
+                if before < after:
+                    continue
+
+                with self.subTest(after=after, before=before):
+                    unbounded = Recordings.select(Recordings.id).where(
+                        Recordings.start_time.between(after, before)
+                        | Recordings.end_time.between(after, before)
+                        | (
+                            (after > Recordings.start_time)
+                            & (before < Recordings.end_time)
+                        )
+                    )
+                    bounded = Recordings.select(Recordings.id).where(
+                        recording_overlap(after, before)
+                    )
+                    self.assertEqual({r.id for r in bounded}, {r.id for r in unbounded})
 
 
 class TestVodManifestPolicy(CoverageDbTestCase):

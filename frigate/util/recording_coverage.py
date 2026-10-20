@@ -23,6 +23,19 @@ class CoverageInterval:
     sub: Any | None
 
 
+def recording_overlap(after: float, before: float) -> Any:
+    """Match recordings overlapping [after, before] as a bounded index range.
+
+    Segments never reach MAX_SEGMENT_DURATION, so the start_time lower bound
+    drops no rows and keeps SQLite from walking the camera's whole history.
+    """
+    return (
+        (Recordings.start_time <= before)
+        & (Recordings.end_time >= after)
+        & (Recordings.start_time >= after - MAX_SEGMENT_DURATION)
+    )
+
+
 def _rows_query(camera: str, after: float, before: float, stream_type: str) -> Any:
     return (
         Recordings.select(
@@ -204,11 +217,12 @@ def coverage_spans(intervals: list[CoverageInterval]) -> list[dict[str, Any]]:
 def stream_has_audio(intervals: list[CoverageInterval], main: bool) -> bool:
     """Whether a stream is audio-bearing over a coverage window.
 
-    A stream counts as audio-bearing unless EVERY one of its rows reports
-    has_audio False; NULL (legacy or undetermined) counts as audio.
+    A stream counts as audio-bearing only when one of its rows is known
+    to carry audio. A NULL row (legacy, or a segment ffprobe could not
+    read) proves nothing either way.
     """
     return any(
-        row is not None and row.has_audio is not False
+        row is not None and row.has_audio is True
         for row in ((interval.main if main else interval.sub) for interval in intervals)
     )
 

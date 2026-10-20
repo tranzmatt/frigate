@@ -4,6 +4,7 @@ import tempfile
 import zipfile
 from unittest.mock import patch
 
+from frigate.const import CLIPS_DIR
 from frigate.jobs.export import (
     ExportJob,
     get_export_job_manager,
@@ -452,6 +453,23 @@ class TestHttpExport(BaseTestHttp):
             unchanged = Export.get(Export.id == "front_door_gone")
             assert unchanged.name == "front door export"
             assert unchanged.video_path == video
+
+    def test_reap_stale_exports_removes_staged_runs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            staging_dir = os.path.join(tmpdir, "staging")
+            os.makedirs(staging_dir)
+            staged = os.path.join(staging_dir, "front_door_abc_0.mp4")
+            finished = os.path.join(tmpdir, "export_stage_saved_abc.mp4")
+
+            for path in (staged, finished):
+                with open(path, "w") as handle:
+                    handle.write("video")
+
+            with patch("frigate.jobs.export.EXPORT_STAGING_DIR", staging_dir):
+                reap_stale_exports()
+
+            assert not os.path.exists(staging_dir)
+            assert os.path.exists(finished)
 
     def test_reap_stale_exports_deletes_rows_with_no_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1033,6 +1051,65 @@ class TestHttpExport(BaseTestHttp):
 
         assert response.status_code == 400
         assert ExportCase.select().count() == 0
+
+    def _batch_export_with_image(self, image_path: str, role: str):
+        with patch(
+            "frigate.api.export.start_export_job",
+            side_effect=lambda _config, job: job.id,
+        ) as start_export_job:
+            with AuthTestClient(self.app) as client:
+                response = client.post(
+                    "/exports/batch",
+                    headers={"remote-user": role, "remote-role": role},
+                    json={
+                        "items": [
+                            {
+                                "camera": "front_door",
+                                "start_time": 110,
+                                "end_time": 150,
+                                "image_path": image_path,
+                            }
+                        ],
+                    },
+                )
+
+        return response, start_export_job
+
+    def test_batch_export_restricted_role_rejects_unreadable_image_path(self):
+        self._insert_recording("rec-front", "front_door", 100, 400)
+        self.app.frigate_config.auth.roles["limited_user"] = ["front_door"]
+
+        for image_path in (
+            f"{CLIPS_DIR}/review/thumb-backyard-123.456-abc.webp",
+            f"{CLIPS_DIR}/thumbs/backyard/123.webp",
+            f"{CLIPS_DIR}/faces/someone/1.webp",
+            f"{CLIPS_DIR}/custom/thumb.jpg",
+        ):
+            response, _ = self._batch_export_with_image(image_path, "limited_user")
+
+            assert response.status_code == 400, image_path
+
+    def test_batch_export_restricted_role_accepts_own_camera_image_path(self):
+        self._insert_recording("rec-front", "front_door", 100, 400)
+        self.app.frigate_config.auth.roles["limited_user"] = ["front_door"]
+        image_path = f"{CLIPS_DIR}/review/thumb-front_door-123.456-abc.webp"
+
+        response, start_export_job = self._batch_export_with_image(
+            image_path, "limited_user"
+        )
+
+        assert response.status_code == 202
+        assert start_export_job.call_args.args[1].image_path == image_path
+
+    def test_batch_export_unrestricted_roles_accept_custom_image_path(self):
+        self._insert_recording("rec-front", "front_door", 100, 400)
+        image_path = f"{CLIPS_DIR}/custom/thumb.jpg"
+
+        for role in ("admin", "viewer"):
+            response, start_export_job = self._batch_export_with_image(image_path, role)
+
+            assert response.status_code == 202, role
+            assert start_export_job.call_args.args[1].image_path == image_path
 
     def test_batch_export_non_admin_can_queue(self):
         self._insert_recording("rec-front", "front_door", 100, 400)

@@ -7,8 +7,9 @@ from unittest.mock import MagicMock, patch
 
 from pydantic import ValidationError
 
-from frigate.config import FrigateConfig, env
-from frigate.config.env import (
+from frigate.config import FrigateConfig
+from frigate.util import env
+from frigate.util.env import (
     FRIGATE_ENV_VARS,
     validate_env_string,
     validate_env_vars,
@@ -53,14 +54,10 @@ class TestGo2RtcAddStreamSubstitution(unittest.TestCase):
     def test_mixed_localtime_and_frigate_var(self):
         """%{localtime\\:...} alongside {FRIGATE_USER} substitutes only the var."""
         FRIGATE_ENV_VARS["FRIGATE_USER"] = "admin"
-        src = (
-            "ffmpeg:rtsp://host/s#raw=-vf "
-            "drawtext=text=%{localtime\\:%Y-%m-%d}:user={FRIGATE_USER}"
-        )
+        src = "rtsp://host/s?text=%{localtime\\:%Y-%m-%d}&user={FRIGATE_USER}"
         self.assertEqual(
             self._call_route(src),
-            "ffmpeg:rtsp://host/s#raw=-vf "
-            "drawtext=text=%{localtime\\:%Y-%m-%d}:user=admin",
+            "rtsp://host/s?text=%{localtime\\:%Y-%m-%d}&user=admin",
         )
 
     def test_unknown_var_falls_back_to_raw_src(self):
@@ -250,6 +247,29 @@ class TestEnvVars(unittest.TestCase):
         result = validate_env_string("{FRIGATE_BROKER}")
         self.assertEqual(result, "mqtt.local")
 
+    def test_install_ignores_go2rtc_exec_override(self):
+        """The go2rtc exec override cannot be enabled from the config."""
+        from frigate.util.services import is_go2rtc_arbitrary_exec_allowed
+
+        env_patch = patch.dict(os.environ)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop("GO2RTC_ALLOW_ARBITRARY_EXEC", None)
+        ctx = self._make_context(install=True)
+        with patch("frigate.util.services.os.path.isfile", return_value=False):
+            for key in ("GO2RTC_ALLOW_ARBITRARY_EXEC", "go2rtc_allow_arbitrary_exec"):
+                validate_env_vars({key: "true", "OTHER_VAR": "value"}, ctx)
+                self.assertNotIn(key, os.environ)
+                self.assertFalse(is_go2rtc_arbitrary_exec_allowed())
+        self.assertEqual(os.environ.get("OTHER_VAR"), "value")
+
+    def test_install_keeps_container_go2rtc_exec_override(self):
+        """An override set in the container environment is left untouched."""
+        ctx = self._make_context(install=True)
+        with patch.dict(os.environ, {"GO2RTC_ALLOW_ARBITRARY_EXEC": "true"}):
+            validate_env_vars({"GO2RTC_ALLOW_ARBITRARY_EXEC": "false"}, ctx)
+            self.assertEqual(os.environ.get("GO2RTC_ALLOW_ARBITRARY_EXEC"), "true")
+
 
 class TestVariableSources(unittest.TestCase):
     """Precedence between the sources that feed FRIGATE_ENV_VARS."""
@@ -301,14 +321,14 @@ class TestVariableSources(unittest.TestCase):
     def test_collision_warns_once_naming_the_winner(self):
         """A key from two sources logs one warning naming the source that won."""
         with patch.dict(env._CONTAINER_ENV, {"FRIGATE_MQTT_HOST": "from_env"}):
-            with self.assertLogs("frigate.config.env", level="WARNING") as logs:
+            with self.assertLogs("frigate.util.env", level="WARNING") as logs:
                 env.apply_config_env_vars({"FRIGATE_MQTT_HOST": "from_config"})
             self.assertEqual(len(logs.output), 1)
             self.assertIn("FRIGATE_MQTT_HOST", logs.output[0])
             self.assertIn("using the value from container environment", logs.output[0])
             self.assertNotIn("environment_vars", logs.output[0])
 
-            with self.assertNoLogs("frigate.config.env", level="WARNING"):
+            with self.assertNoLogs("frigate.util.env", level="WARNING"):
                 env._rebuild()
 
 
@@ -360,7 +380,7 @@ class TestSecretsFile(unittest.TestCase):
     def test_unprefixed_key_is_ignored_with_a_warning(self):
         """Names must start with FRIGATE_, matching the credentials directory."""
         self._write("cam_pass: hunter2\nFRIGATE_CAM_PASS: hunter2\n")
-        with self.assertLogs("frigate.config.env", level="WARNING") as logs:
+        with self.assertLogs("frigate.util.env", level="WARNING") as logs:
             values = env._load_secrets_file()
         self.assertEqual(values, {"FRIGATE_CAM_PASS": "hunter2"})
         self.assertIn("cam_pass", logs.output[0])
@@ -483,10 +503,10 @@ class TestSourceRobustness(unittest.TestCase):
         env.reload_sources()
         env._CONFIG_ENV_VARS["FRIGATE_DUPE"] = "from_config"
 
-        with self.assertNoLogs("frigate.config.env", level="WARNING"):
+        with self.assertNoLogs("frigate.util.env", level="WARNING"):
             env._rebuild(warn=False)
 
-        with self.assertLogs("frigate.config.env", level="WARNING") as logs:
+        with self.assertLogs("frigate.util.env", level="WARNING") as logs:
             env._rebuild()
         self.assertIn("FRIGATE_DUPE", logs.output[0])
 
@@ -496,7 +516,7 @@ class TestSourceRobustness(unittest.TestCase):
         env.reload_sources()
 
         self._write_secrets("FRIGATE_CAMS:\n  alley: hunter2\n")
-        with self.assertLogs("frigate.config.env", level="ERROR") as logs:
+        with self.assertLogs("frigate.util.env", level="ERROR") as logs:
             env.reload_sources()
 
         self.assertIn("FRIGATE_CAMS", logs.output[0])
@@ -505,7 +525,7 @@ class TestSourceRobustness(unittest.TestCase):
     def test_duplicate_key_error_does_not_log_the_values(self):
         """ruamel's duplicate key message quotes both values; the log must not."""
         self._write_secrets("FRIGATE_CAM_PASS: hunter2\nFRIGATE_CAM_PASS: hunter3\n")
-        with self.assertLogs("frigate.config.env", level="ERROR") as logs:
+        with self.assertLogs("frigate.util.env", level="ERROR") as logs:
             env.reload_sources()
 
         self.assertNotIn("hunter2", logs.output[0])
@@ -535,7 +555,7 @@ class TestSourceRobustness(unittest.TestCase):
         with open(os.path.join(self._creds.name, "FRIGATE_CRED"), "w") as f:
             f.write("from_creds\n")
 
-        with self.assertLogs("frigate.config.env", level="WARNING") as logs:
+        with self.assertLogs("frigate.util.env", level="WARNING") as logs:
             env.reload_sources()
 
         self.assertIn("FRIGATE_NOT_A_FILE", logs.output[0])

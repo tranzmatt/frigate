@@ -170,7 +170,6 @@ class DetectorRunner(FrigateProcess):
             mono_start = time.monotonic()
             detections = object_detector.detect_raw(input_frame)
             duration = time.monotonic() - mono_start
-            frame_manager.close(connection_id)
 
             if connection_id not in self.outputs:
                 self.create_output_shm(connection_id)
@@ -258,10 +257,6 @@ class AsyncDetectorRunner(FrigateProcess):
                 continue
             ts = self.send_times.popleft()
             duration = time.perf_counter() - ts
-
-            # release input buffer
-            assert self._frame_manager is not None
-            self._frame_manager.close(connection_id)
 
             if connection_id not in self.outputs:
                 self.create_output_shm(connection_id)
@@ -360,7 +355,7 @@ class ObjectDetectProcess:
                 # detection_start is set only after detection_queue.get()
                 # returns. If it was reset during the grace period, the process
                 # recovered and may be waiting on the shared queue again.
-                if self.detection_start.value == 0.0:  # type: ignore[attr-defined]
+                if self.detection_start.value == 0.0:
                     logging.info("Detection process recovered before restart")
                     return
 
@@ -369,7 +364,7 @@ class ObjectDetectProcess:
                 self.detect_process.join()
             logging.info("Detection process has exited...")
 
-        self.detection_start.value = 0.0  # type: ignore[attr-defined]
+        self.detection_start.value = 0.0
 
         # Async path for MemryX
         if self.detector_config.type == "memryx":

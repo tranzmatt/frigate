@@ -8,17 +8,17 @@ import threading
 from multiprocessing.synchronize import Event as MpEvent
 from wsgiref.simple_server import make_server
 
+import cv2
 from ws4py.server.wsgirefserver import (
     WebSocketWSGIHandler,
     WebSocketWSGIRequestHandler,
     WSGIServer,
 )
-from ws4py.server.wsgiutils import WebSocketWSGIApplication
 
 from frigate.comms.config_updater import ConfigSubscriber
 from frigate.comms.detections_updater import DetectionSubscriber, DetectionTypeEnum
-from frigate.comms.ws import WebSocket
-from frigate.config import FrigateConfig
+from frigate.comms.ws import OriginCheckedWebSocketApplication, WebSocket
+from frigate.config import AuthConfig, FrigateConfig
 from frigate.config.camera.updater import (
     CameraConfigUpdateEnum,
     CameraConfigUpdateSubscriber,
@@ -122,6 +122,10 @@ class OutputProcess(FrigateProcess):
     def run(self) -> None:
         self.pre_run_setup(self.config.logger)
 
+        # birdseye resizes are small, and OpenCV's per-core thread pool burns
+        # ~3x the CPU of running them inline
+        cv2.setNumThreads(1)
+
         frame_manager = SharedMemoryFrameManager()
 
         # start a websocket server on 8082
@@ -131,7 +135,7 @@ class OutputProcess(FrigateProcess):
             8082,
             server_class=WSGIServer,
             handler_class=WebSocketWSGIRequestHandler,
-            app=WebSocketWSGIApplication(handler_cls=WebSocket),
+            app=OriginCheckedWebSocketApplication(handler_cls=WebSocket),
         )
         websocket_server.initialize_websockets_manager()
         websocket_thread = threading.Thread(target=websocket_server.serve_forever)
@@ -145,9 +149,11 @@ class OutputProcess(FrigateProcess):
                 CameraConfigUpdateEnum.birdseye,
                 CameraConfigUpdateEnum.enabled,
                 CameraConfigUpdateEnum.record,
+                CameraConfigUpdateEnum.remove,
             ],
         )
         birdseye_config_subscriber = ConfigSubscriber("config/birdseye", exact=True)
+        auth_config_subscriber = ConfigSubscriber("config/auth", exact=True)
 
         jsmpeg_cameras: dict[str, JsmpegCamera] = {}
         birdseye: Birdseye | None = None
@@ -188,6 +194,15 @@ class OutputProcess(FrigateProcess):
                 self.config.birdseye = birdseye_config
                 logger.debug("Applied dynamic birdseye config update")
 
+            # user endpoints publish None on this topic and role edits an AuthConfig
+            while True:
+                auth_topic, auth_config = auth_config_subscriber.check_for_update()
+                if auth_topic is None:
+                    break
+                if isinstance(auth_config, AuthConfig):
+                    self.config.auth = auth_config
+                    logger.debug("Applied dynamic auth config update")
+
             # drain review updates every iteration, not just when birdseye is
             # being consumed, so a dropped end never strands a camera
             if birdseye is not None:
@@ -207,6 +222,10 @@ class OutputProcess(FrigateProcess):
                             preview_write_times,
                             birdseye,
                         )
+
+            if CameraConfigUpdateEnum.remove in updates:
+                for camera in updates["remove"]:
+                    frame_manager.close_camera(camera)
 
             _result = detection_subscriber.check_for_update(timeout=1)
             if _result is None:
@@ -241,7 +260,7 @@ class OutputProcess(FrigateProcess):
                 continue
 
             frame = frame_manager.get(
-                frame_name, self.config.cameras[camera].frame_shape_yuv
+                frame_name, self.config.cameras[camera].frame_shape_yuv, frame_time
             )
 
             if frame is None:
@@ -296,8 +315,6 @@ class OutputProcess(FrigateProcess):
                     frame,
                 )
 
-            frame_manager.close(frame_name)
-
         move_preview_frames("clips")
 
         while True:
@@ -308,21 +325,6 @@ class OutputProcess(FrigateProcess):
 
             if not topic or data is None:
                 break
-
-            (
-                camera,
-                frame_name,
-                frame_time,
-                current_tracked_objects,
-                motion_boxes,
-                regions,
-            ) = data
-
-            camera_config = self.config.cameras.get(camera)
-
-            if camera_config is not None:
-                frame_manager.get(frame_name, camera_config.frame_shape_yuv)
-                frame_manager.close(frame_name)
 
         detection_subscriber.stop()
 
@@ -337,6 +339,7 @@ class OutputProcess(FrigateProcess):
 
         config_subscriber.stop()
         birdseye_config_subscriber.stop()
+        auth_config_subscriber.stop()
         websocket_server.manager.close_all()
         websocket_server.manager.stop()
         websocket_server.manager.join()

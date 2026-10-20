@@ -36,6 +36,7 @@ from frigate.util.recording_coverage import (
     coverage_spans,
     known_video_codecs,
     realized_timelines,
+    recording_overlap,
     resolve_coverage,
     stream_media_summary,
 )
@@ -175,7 +176,7 @@ async def all_recordings_summary(
 @router.get(
     "/{camera_name}/recordings/summary", dependencies=[Depends(require_camera_access)]
 )
-async def recordings_summary(camera_name: str, timezone: str = "utc"):
+async def recordings_summary(camera_name: str, timezone: str = "UTC"):
     """Returns hourly summary for recordings of given camera"""
 
     time_range_query = (
@@ -537,11 +538,7 @@ async def delete_recordings(
 
     # Build query to find overlapping recordings
     clauses = [
-        (
-            Recordings.start_time.between(start, end)
-            | Recordings.end_time.between(start, end)
-            | ((start > Recordings.start_time) & (end < Recordings.end_time))
-        ),
+        recording_overlap(start, end),
         (Recordings.camera << camera_list),
     ]
 

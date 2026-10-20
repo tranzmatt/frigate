@@ -8,13 +8,13 @@ from typing import Any
 from ruamel.yaml import YAML
 
 sys.path.insert(0, "/opt/frigate")
-from frigate.config.env import apply_config_env_vars, substitute_frigate_vars
 from frigate.const import (
     BIRDSEYE_PIPE,
     LIBAVFORMAT_VERSION_MAJOR,
 )
 from frigate.ffmpeg_presets import parse_preset_hardware_acceleration_encode
 from frigate.util.config import find_config_file, resolve_ffmpeg_path
+from frigate.util.env import apply_config_env_vars, substitute_frigate_vars
 from frigate.util.live_streams import raw_transcode_streams
 from frigate.util.services import (
     is_go2rtc_arbitrary_exec_allowed,
@@ -198,9 +198,13 @@ if config.get("birdseye", {}).get("restream", False):
     else:
         go2rtc_config["streams"] = {"birdseye": ffmpeg_cmd}
 
-# Write go2rtc_config to /dev/shm/go2rtc.yaml
-with open("/dev/shm/go2rtc.yaml", "w") as f:
+# The run script removes the old file first. Exclusive create never follows a
+# link the go2rtc user planted in sticky /dev/shm. The config contains camera
+# credentials, so it is not world-readable.
+fd = os.open(
+    "/dev/shm/go2rtc.yaml",
+    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+    0o640,
+)
+with os.fdopen(fd, "w") as f:
     yaml.dump(go2rtc_config, f)
-
-# config contains camera credentials; do not leave it world-readable
-os.chmod("/dev/shm/go2rtc.yaml", 0o640)

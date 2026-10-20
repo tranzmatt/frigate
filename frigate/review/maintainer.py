@@ -504,6 +504,7 @@ class ReviewSegmentMaintainer(threading.Thread):
     def _handle_camera_removed(self, camera: str) -> None:
         """Close out a deleted camera's segment so a reused name cannot inherit it."""
         self.forcibly_end_segment(camera)
+        self.frame_manager.close_camera(camera)
         self.indefinite_events.pop(camera, None)
         self.recent_classification_state_changes.pop(camera, None)
 
@@ -542,19 +543,15 @@ class ReviewSegmentMaintainer(threading.Thread):
         if len(objects) <= pending.frame_active_count:
             return
 
-        try:
-            yuv_frame = self.frame_manager.get(
-                frame_name, camera_config.frame_shape_yuv
-            )
-        except FileNotFoundError:
-            return
+        yuv_frame = self.frame_manager.get(
+            frame_name, camera_config.frame_shape_yuv, frame_time
+        )
 
         if yuv_frame is None:
             logger.debug(f"Failed to get frame {frame_name} from SHM")
             return
 
         pending.update_frame(camera_config, yuv_frame, objects)
-        self.frame_manager.close(frame_name)
 
     def update_existing_segment(
         self,
@@ -653,7 +650,7 @@ class ReviewSegmentMaintainer(threading.Thread):
                 try:
                     if should_update_image:
                         yuv_frame = self.frame_manager.get(
-                            frame_name, camera_config.frame_shape_yuv
+                            frame_name, camera_config.frame_shape_yuv, frame_time
                         )
 
                         if yuv_frame is None:
@@ -669,7 +666,6 @@ class ReviewSegmentMaintainer(threading.Thread):
                         activity.get_all_objects(),
                         prev_data,
                     )
-                    self.frame_manager.close(frame_name)
                 except FileNotFoundError:
                     return
 
@@ -677,7 +673,7 @@ class ReviewSegmentMaintainer(threading.Thread):
             if not segment.has_frame:
                 try:
                     yuv_frame = self.frame_manager.get(
-                        frame_name, camera_config.frame_shape_yuv
+                        frame_name, camera_config.frame_shape_yuv, frame_time
                     )
 
                     if yuv_frame is None:
@@ -685,7 +681,6 @@ class ReviewSegmentMaintainer(threading.Thread):
                         return
 
                     segment.save_full_frame(camera_config, yuv_frame)
-                    self.frame_manager.close(frame_name)
                     self._publish_segment_update(
                         segment, camera_config, None, [], prev_data
                     )
@@ -770,7 +765,7 @@ class ReviewSegmentMaintainer(threading.Thread):
 
                 try:
                     yuv_frame = self.frame_manager.get(
-                        frame_name, camera_config.frame_shape_yuv
+                        frame_name, camera_config.frame_shape_yuv, frame_time
                     )
 
                     if yuv_frame is None:
@@ -780,7 +775,6 @@ class ReviewSegmentMaintainer(threading.Thread):
                     new_segment.update_frame(
                         camera_config, yuv_frame, activity.get_all_objects()
                     )
-                    self.frame_manager.close(frame_name)
                     self._publish_segment_start(new_segment)
                 except FileNotFoundError:
                     return
